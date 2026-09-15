@@ -72,7 +72,10 @@ void AppEspnowControl::onOpen()
 
     auto& stackchan = GetStackChan();
 
-    auto avatar = std::make_unique<avatar::DefaultAvatar>();
+    // Yellow face marks ESP-NOW remote mode at a glance
+    // (Companion is purple, Dance is magenta)
+    auto avatar            = std::make_unique<avatar::DefaultAvatar>();
+    avatar->secondaryColor = lv_color_hex(0xF7C948);
     avatar->init(lv_screen_active());
     stackchan.attachAvatar(std::move(avatar));
 

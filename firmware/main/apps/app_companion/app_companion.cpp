@@ -23,6 +23,9 @@ using namespace stackchan;
 static constexpr uint32_t WAVE_REACTION_MS = 2600;
 // Minimum time between pet chirps, so continuous petting doesn't machine-gun
 static constexpr uint32_t CHIRP_COOLDOWN_MS = 3500;
+// Per-mode face background: Companion is purple, so a glance at the robot
+// tells you which mode it is in (Dance is magenta, ESP-NOW remote is yellow)
+static constexpr uint32_t COMPANION_FACE_COLOR = 0x5B2C87;
 // Wave reaction face background
 static constexpr uint32_t WAVE_FACE_COLOR = 0xF7C948;
 
@@ -53,6 +56,8 @@ void AppCompanion::onOpen()
         auto& stackchan = GetStackChan();
 
         auto avatar = std::make_unique<avatar::DefaultAvatar>();
+        // Also recolors the eyelids, so blinking stays invisible against the bg
+        avatar->secondaryColor = lv_color_hex(COMPANION_FACE_COLOR);
         avatar->init(lv_screen_active());
         _face_panel = avatar->getPanel();
         stackchan.attachAvatar(std::move(avatar));
@@ -169,7 +174,7 @@ void AppCompanion::end_wave_reaction()
 
     stackchan.avatar().setEmotion(avatar::Emotion::Neutral);
     if (_face_panel) {
-        _face_panel->setBgColor(lv_color_black());
+        _face_panel->setBgColor(lv_color_hex(COMPANION_FACE_COLOR));
     }
 
     if (_idle_motion) {

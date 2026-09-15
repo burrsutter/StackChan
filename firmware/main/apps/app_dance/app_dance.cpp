@@ -52,8 +52,10 @@ void AppDance::onOpen()
     // Destroy loading page
     loading_page.reset();
 
-    // Create default avatar
-    auto avatar = std::make_unique<avatar::DefaultAvatar>();
+    // Create default avatar. Magenta face marks Dance mode at a glance
+    // (Companion is purple, ESP-NOW remote is yellow)
+    auto avatar            = std::make_unique<avatar::DefaultAvatar>();
+    avatar->secondaryColor = lv_color_hex(0xC2158A);
     avatar->init(lv_screen_active());
     GetStackChan().attachAvatar(std::move(avatar));
 
