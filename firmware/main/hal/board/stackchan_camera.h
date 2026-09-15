@@ -29,6 +29,9 @@ private:
         v4l2_pix_fmt_t format = 0;
     } frame_;
     v4l2_pix_fmt_t sensor_format_ = 0;
+    // Stream dimensions in sensor-native orientation (valid in all configs)
+    uint16_t stream_width_  = 0;
+    uint16_t stream_height_ = 0;
 #ifdef CONFIG_XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE
     uint16_t sensor_width_  = 0;
     uint16_t sensor_height_ = 0;
@@ -51,6 +54,11 @@ public:
     virtual void SetExplainUrl(const std::string& url, const std::string& token);
     virtual bool Capture() override;
     bool StreamCaptures();
+
+    // Grab one frame and reduce it to a gridW x gridH grid of average luma
+    // values. Silent (no shutter sfx) and cheap (no copy, no JPEG) — meant for
+    // continuous motion detection.
+    bool SampleLumaGrid(uint8_t* grid, int gridW, int gridH);
 
     // 翻转控制函数
     virtual bool SetHMirror(bool enabled) override;

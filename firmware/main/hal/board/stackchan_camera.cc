@@ -278,6 +278,8 @@ StackChanCamera::StackChanCamera(const esp_video_init_config_t& config)
     frame_.width  = setformat.fmt.pix.width;
     frame_.height = setformat.fmt.pix.height;
 #endif
+    stream_width_  = setformat.fmt.pix.width;
+    stream_height_ = setformat.fmt.pix.height;
 
     // 申请缓冲并mmap
     struct v4l2_requestbuffers req = {};
@@ -390,6 +392,67 @@ void StackChanCamera::SetExplainUrl(const std::string& url, const std::string& t
 {
     explain_url_   = url;
     explain_token_ = token;
+}
+
+bool StackChanCamera::SampleLumaGrid(uint8_t* grid, int gridW, int gridH)
+{
+    if (!streaming_on_ || video_fd_ < 0 || stream_width_ == 0 || stream_height_ == 0 || gridW <= 0 || gridH <= 0) {
+        return false;
+    }
+
+    struct v4l2_buffer buf = {};
+    buf.type               = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory             = V4L2_MEMORY_MMAP;
+    if (ioctl(video_fd_, VIDIOC_DQBUF, &buf) != 0) {
+        return false;
+    }
+
+    const uint8_t* src = static_cast<const uint8_t*>(mmap_buffers_[buf.index].start);
+    const int w        = stream_width_;
+    const int h        = stream_height_;
+    const int cell_w   = w / gridW;
+    const int cell_h   = h / gridH;
+
+    for (int gy = 0; gy < gridH; gy++) {
+        for (int gx = 0; gx < gridW; gx++) {
+            uint32_t sum   = 0;
+            uint32_t count = 0;
+            for (int y = gy * cell_h; y < (gy + 1) * cell_h; y += 4) {
+                for (int x = gx * cell_w; x < (gx + 1) * cell_w; x += 4) {
+                    const size_t idx = (size_t)y * w + x;
+                    uint32_t luma;
+                    switch (sensor_format_) {
+                        case V4L2_PIX_FMT_YUYV:
+                        case V4L2_PIX_FMT_YUV422P:  // 当前版本 esp_video 中 YUV422P 实际输出为 YUYV
+                            luma = src[idx * 2];
+                            break;
+                        case V4L2_PIX_FMT_RGB565:
+                        case V4L2_PIX_FMT_RGB565X: {
+                            uint16_t px = reinterpret_cast<const uint16_t*>(src)[idx];
+                            if (sensor_format_ == V4L2_PIX_FMT_RGB565X) {
+                                px = (px >> 8) | (px << 8);
+                            }
+                            luma = (((px >> 11) & 0x1F) * 8 + ((px >> 5) & 0x3F) * 4 + (px & 0x1F) * 8) / 3;
+                            break;
+                        }
+                        case V4L2_PIX_FMT_GREY:
+                        default:
+                            luma = src[idx];
+                            break;
+                    }
+                    sum += luma;
+                    count++;
+                }
+            }
+            grid[gy * gridW + gx] = count ? static_cast<uint8_t>(sum / count) : 0;
+        }
+    }
+
+    if (ioctl(video_fd_, VIDIOC_QBUF, &buf) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_QBUF failed");
+        return false;
+    }
+    return true;
 }
 
 bool StackChanCamera::Capture()

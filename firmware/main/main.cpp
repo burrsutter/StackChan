@@ -39,6 +39,8 @@ extern "C" void app_main(void)
         GetMooncake().installApp(std::make_unique<AppEzdata>());
         GetMooncake().installApp(std::make_unique<AppDance>());
         GetMooncake().installApp(std::make_unique<AppSetup>());
+        // Installed last so existing warm-reboot icon indices stay valid
+        GetMooncake().installApp(std::make_unique<AppCompanion>());
 
         // Main loop
         while (1) {

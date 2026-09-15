@@ -29,6 +29,8 @@ void AppLauncher::onLauncherOpen()
     if (!_startup_checked && !GetHAL().isAppConfiged()) {
         mclog::tagInfo(getAppInfo().name, "app not configured, start startup worker");
         _startup_worker = std::make_unique<setup_workers::StartupWorker>();
+    } else if (try_autostart_companion()) {
+        // Companion app opens instead; launcher view is created on next open
     } else {
         create_launcher_view();
     }
@@ -75,6 +77,28 @@ void AppLauncher::create_launcher_view()
         mclog::tagInfo(getAppInfo().name, "handle open app, app id: {}", appID);
         openApp(appID);
     };
+}
+
+bool AppLauncher::try_autostart_companion()
+{
+    // Only on cold boot: skip if already attempted, or if this boot is a warm
+    // reboot back from another app (the launcher view restores its position)
+    if (_companion_autostart_done) {
+        return false;
+    }
+    _companion_autostart_done = true;
+
+    if (GetHAL().getWarmRebootTarget() >= 0) {
+        return false;
+    }
+
+    for (const auto& props : getAppProps()) {
+        if (props.info.name == "COMPANION") {
+            mclog::tagInfo(getAppInfo().name, "auto opening companion app, id: {}", props.appID);
+            return openApp(props.appID);
+        }
+    }
+    return false;
 }
 
 void AppLauncher::screensaver_update()
