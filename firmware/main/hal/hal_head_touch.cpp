@@ -17,8 +17,15 @@ enum class TouchState { IDLE, TOUCHED, SWIPING };
 
 // 配置参数
 struct TouchConfig {
-    uint8_t touch_threshold = 1;
+    // 空闲时中间通道常驻 1 count 的噪声，阈值必须高于该噪声地板。
+    // 实测：真实触摸各通道 2~3 counts
+    uint8_t touch_threshold = 2;
     int16_t swipe_threshold = 40;  // 使用百分比，范围-100到100
+    // 位置是比值，总强度很低时 1 count 噪声就能让位置跳 50~100，
+    // 远超 swipe_threshold。低于该总强度不信任位置
+    uint16_t min_total_for_position = 4;
+    // 滑动需要连续两帧确认，过滤单帧噪声尖峰
+    uint8_t swipe_confirm_samples = 2;
 };
 
 // 触摸数据
@@ -36,6 +43,11 @@ struct TouchData {
         return static_cast<int16_t>(weighted / total);
     }
 
+    uint16_t get_total_intensity() const
+    {
+        return intensity[0] + intensity[1] + intensity[2];
+    }
+
     uint8_t get_max_intensity() const
     {
         uint8_t max_val = intensity[0];
@@ -44,9 +56,9 @@ struct TouchData {
         return max_val;
     }
 
-    bool is_touched() const
+    bool is_touched(uint8_t threshold) const
     {
-        return get_max_intensity() >= 1;
+        return get_max_intensity() >= threshold;
     }
 };
 
@@ -61,40 +73,68 @@ public:
     HeadPetGesture update(const TouchData& data)
     {
         HeadPetGesture gesture = HeadPetGesture::None;
+        const bool touched     = data.is_touched(config.touch_threshold);
+        // 位置只在信号足够强时可信，否则保持上一次的有效值
+        const bool pos_valid = data.get_total_intensity() >= config.min_total_for_position;
 
         switch (current_state) {
             case TouchState::IDLE:
-                if (data.is_touched()) {
-                    current_state    = TouchState::TOUCHED;
-                    initial_position = data.get_position();
-                    gesture          = HeadPetGesture::Press;
-                    // mclog::tagInfo(_tag, "Touch detected at position: {}", initial_position);
+                if (touched) {
+                    current_state = TouchState::TOUCHED;
+                    // 信号太弱就先不锁定起点，等到可信的一帧再记录
+                    has_initial_position = pos_valid;
+                    initial_position     = pos_valid ? data.get_position() : 0;
+                    pending_direction    = 0;
+                    pending_count        = 0;
+                    gesture              = HeadPetGesture::Press;
                 }
                 break;
 
             case TouchState::TOUCHED:
-                if (!data.is_touched()) {
+                if (!touched) {
                     current_state = TouchState::IDLE;
                     gesture       = HeadPetGesture::Release;
-                } else {
-                    // Check for swipe
-                    int16_t current_pos = data.get_position();
-                    int16_t delta       = current_pos - initial_position;
-
-                    if (delta > config.swipe_threshold) {
-                        current_state = TouchState::SWIPING;
-                        gesture       = HeadPetGesture::SwipeForward;
-                        // mclog::tagInfo(_tag, "Swipe forward detected, delta: {}", delta);
-                    } else if (delta < -config.swipe_threshold) {
-                        current_state = TouchState::SWIPING;
-                        gesture       = HeadPetGesture::SwipeBackward;
-                        // mclog::tagInfo(_tag, "Swipe backward detected, delta: {}", delta);
+                    break;
+                }
+                if (!pos_valid) {
+                    // 弱信号帧不参与判定，也不累积确认
+                    pending_direction = 0;
+                    pending_count     = 0;
+                    break;
+                }
+                if (!has_initial_position) {
+                    has_initial_position = true;
+                    initial_position     = data.get_position();
+                    break;
+                }
+                {
+                    const int16_t delta = data.get_position() - initial_position;
+                    const int direction = delta > config.swipe_threshold    ? 1
+                                          : delta < -config.swipe_threshold ? -1
+                                                                            : 0;
+                    if (direction == 0) {
+                        pending_direction = 0;
+                        pending_count     = 0;
+                        break;
+                    }
+                    // 同方向连续多帧才认可，单帧噪声尖峰会被清零
+                    if (direction == pending_direction) {
+                        pending_count++;
+                    } else {
+                        pending_direction = direction;
+                        pending_count     = 1;
+                    }
+                    if (pending_count >= config.swipe_confirm_samples) {
+                        current_state     = TouchState::SWIPING;
+                        gesture = direction > 0 ? HeadPetGesture::SwipeForward : HeadPetGesture::SwipeBackward;
+                        pending_direction = 0;
+                        pending_count     = 0;
                     }
                 }
                 break;
 
             case TouchState::SWIPING:
-                if (!data.is_touched()) {
+                if (!touched) {
                     current_state = TouchState::IDLE;
                     gesture       = HeadPetGesture::Release;
                 }
@@ -113,6 +153,9 @@ private:
     TouchConfig config;
     TouchState current_state;
     int16_t initial_position;
+    bool has_initial_position = false;
+    int pending_direction     = 0;
+    uint8_t pending_count     = 0;
 };
 
 static void _head_touch_update_task(void* param)
