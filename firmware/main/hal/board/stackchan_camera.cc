@@ -2,6 +2,8 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/param.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <errno.h>
 #include <esp_heap_caps.h>
@@ -398,6 +400,19 @@ bool StackChanCamera::SampleLumaGrid(uint8_t* grid, int gridW, int gridH)
 {
     if (!streaming_on_ || video_fd_ < 0 || stream_width_ == 0 || stream_height_ == 0 || gridW <= 0 || gridH <= 0) {
         return false;
+    }
+
+    // VIDIOC_DQBUF blocks until a frame is ready, and this device is
+    // configured with a single buffer. If the sensor stalls, a caller polling
+    // in its own task would block forever and never observe a stop request --
+    // which hangs app shutdown. Wait with a timeout instead.
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(video_fd_, &fds);
+    struct timeval timeout = {.tv_sec = 0, .tv_usec = 200000};  // 200ms
+    const int ready        = select(video_fd_ + 1, &fds, nullptr, nullptr, &timeout);
+    if (ready <= 0) {
+        return false;  // timed out or error; caller simply skips this sample
     }
 
     struct v4l2_buffer buf = {};

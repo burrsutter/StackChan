@@ -60,9 +60,19 @@ void WaveAttention::stop()
         return;
     }
     _stop_requested = true;
-    while (_running) {
+
+    // Bounded wait. Blocking forever here would freeze app shutdown if the
+    // task were ever stuck in a driver call; giving up is safe because this
+    // object outlives the app's close (apps are only destroyed on uninstall),
+    // and _stop_requested stays set so the task still exits on its own.
+    const uint32_t deadline = GetHAL().millis() + 2000;
+    while (_running && GetHAL().millis() < deadline) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    if (_running) {
+        mclog::tagWarn(_tag, "task did not stop within 2s, leaving it to exit on its own");
+    }
+
     _wave_flag = false;
 }
 
