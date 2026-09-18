@@ -106,6 +106,23 @@ public:
     {
         int moving = _scs_bus.ReadMove(_config.id);
         // mclog::tagInfo(_tag, "id: {} moving: {}", _id, moving);
+
+        // ReadMove returns -1 when the servo does not answer on the bus.
+        // Passing that through as "moving" (it is != 0) deadlocks anything
+        // that waits for the head to be still -- idle motion stops animating
+        // and never recovers. A failed read is not evidence of movement, so
+        // report "not moving" and let callers proceed.
+        if (moving < 0) {
+            if (!_move_read_failing) {
+                _move_read_failing = true;
+                mclog::tagWarn(_tag, "id: {} move-state read failing; treating as not moving", _config.id);
+            }
+            return false;
+        }
+        if (_move_read_failing) {
+            _move_read_failing = false;
+            mclog::tagInfo(_tag, "id: {} move-state read recovered", _config.id);
+        }
         return moving != 0;
     }
 
@@ -171,8 +188,9 @@ private:
 
     ServoConfig_t _config;
     Vector2i _runtime_raw_pos_limit;
-    int _zero_pos      = 0;
-    Mode _current_mode = Mode::Position;
+    int _zero_pos           = 0;
+    Mode _current_mode      = Mode::Position;
+    bool _move_read_failing = false;  // logs bus read failure once, not every poll
 
     static constexpr uint32_t kStallFeedbackIntervalMs = 50;
     static constexpr int kStallMinTargetDeltaRaw       = 8;
