@@ -15,6 +15,130 @@ using namespace stackchan::motion;
 
 static SCSCL _scs_bus;
 
+/*
+ * Servo bus watchdog.
+ *
+ * Both servos share one half-duplex UART bus. On the K151 the servos have
+ * been seen to stop answering entirely (every read returns -1, the head
+ * freezes) in a way that survives an ESP32 reset but clears with a power
+ * cycle -- so the fault sits on the servo/VM-rail side, not in the UART
+ * driver. The servo rail is switched by the PY32 IO expander (VM EN), so
+ * when the bus has been silent for a while we pulse that rail off and on
+ * to give the servos a real power cycle, with exponential backoff so a
+ * genuinely broken bus is not hammered forever.
+ *
+ * Everything here is non-blocking: read paths report their outcome, the
+ * write path ticks the state machine (reads stop during an animation, so
+ * timing cannot depend on them alone), and it all runs on the motion
+ * update loop against millis().
+ */
+class ServoBusWatchdog {
+public:
+    static inline const std::string _tag = "ServoBus";
+
+    // Called after every bus read. `ok` is whether the servo answered with
+    // a valid frame; `err` is the driver's last error code (SCS_ERR_LIST).
+    void noteRead(bool ok, uint8_t err)
+    {
+        const uint32_t now = GetHAL().millis();
+
+        if (ok) {
+            if (_failing) {
+                mclog::tagInfo(_tag, "bus recovered after {} ms, {} power pulse(s)", now - _fail_since,
+                               _pulse_count);
+            }
+            _failing     = false;
+            _pulse_count = 0;
+            _state       = State::Idle;
+            return;
+        }
+
+        if (!_failing) {
+            _failing    = true;
+            _fail_since = now;
+            _next_pulse = now + kFirstPulseDelayMs;
+            _last_err   = err;
+            mclog::tagWarn(_tag, "bus reads failing ({}); will pulse servo power in {} ms if it stays silent",
+                           err_name(err), kFirstPulseDelayMs);
+            return;
+        }
+
+        _last_err = err;
+        tick();
+    }
+
+    // Advance the power-pulse state machine. Called from every bus access,
+    // read or write, so the rail is not left off for a whole animation.
+    void tick()
+    {
+        if (!_failing) {
+            return;
+        }
+        const uint32_t now = GetHAL().millis();
+        const uint8_t err  = _last_err;
+
+        switch (_state) {
+            case State::Idle:
+                if (static_cast<int32_t>(now - _next_pulse) >= 0) {
+                    _pulse_count++;
+                    mclog::tagWarn(_tag, "bus silent for {} ms ({}); pulsing servo power, attempt {}",
+                                   now - _fail_since, err_name(err), _pulse_count);
+                    GetHAL().setServoPowerEnabled(false);
+                    _power_off_tick = now;
+                    _state          = State::PowerOff;
+                }
+                break;
+
+            case State::PowerOff:
+                if (now - _power_off_tick >= kPowerOffMs) {
+                    GetHAL().setServoPowerEnabled(true);
+                    // Back off: 3s, 6s, 12s ... capped, so a dead bus is not thrashed.
+                    uint32_t delay = kFirstPulseDelayMs << (_pulse_count < 6 ? _pulse_count : 6);
+                    if (delay > kMaxPulseDelayMs) {
+                        delay = kMaxPulseDelayMs;
+                    }
+                    _next_pulse = now + delay;
+                    _state      = State::Idle;
+                    mclog::tagInfo(_tag, "servo power back on; next pulse in {} ms if still silent", delay);
+                }
+                break;
+        }
+    }
+
+private:
+    enum class State { Idle, PowerOff };
+
+    static constexpr uint32_t kFirstPulseDelayMs = 3000;   // silence tolerated before the first pulse
+    static constexpr uint32_t kMaxPulseDelayMs   = 60000;  // backoff ceiling between pulses
+    static constexpr uint32_t kPowerOffMs        = 300;    // how long VM EN is held low per pulse
+
+    static const char* err_name(uint8_t err)
+    {
+        switch (err) {
+            case ERR_NO_REPLY:
+                return "no reply";
+            case ERR_CRC_CMP:
+                return "bad checksum";
+            case ERR_SLAVE_ID:
+                return "wrong servo id";
+            case ERR_BUFF_LEN:
+                return "bad length";
+            default:
+                return "unknown";
+        }
+    }
+
+    bool _failing            = false;
+    State _state             = State::Idle;
+    uint32_t _fail_since     = 0;
+    uint32_t _next_pulse     = 0;
+    uint32_t _power_off_tick = 0;
+    uint32_t _pulse_count    = 0;
+    uint8_t _last_err        = 0;
+};
+
+static ServoBusWatchdog _bus_watchdog;
+
 struct ServoConfig_t {
     int id             = -1;
     int defaultZeroPos = 0;
@@ -78,6 +202,8 @@ public:
 
         // mclog::tagInfo(_tag, "id: {} mapped angle: {}", _id, mapped_angle);
 
+        _bus_watchdog.tick();
+
         if (update_stall_protection(mapped_angle)) {
             return;
         }
@@ -89,6 +215,7 @@ public:
     int getCurrentAngle() override
     {
         int current_pos = _scs_bus.ReadPos(_config.id);
+        _bus_watchdog.noteRead(current_pos >= 0, _scs_bus.getLastError());
         if (!is_raw_pos_valid(current_pos)) {
             int fallback_angle = uitk::clamp(Servo::getCurrentAngle(), getAngleLimit().x, getAngleLimit().y);
             mclog::tagWarn(_tag, "id: {} ignore invalid current pos: {}, fallback angle: {}", _config.id, current_pos,
@@ -106,6 +233,7 @@ public:
     {
         int moving = _scs_bus.ReadMove(_config.id);
         // mclog::tagInfo(_tag, "id: {} moving: {}", _id, moving);
+        _bus_watchdog.noteRead(moving >= 0, _scs_bus.getLastError());
 
         // ReadMove returns -1 when the servo does not answer on the bus.
         // Passing that through as "moving" (it is != 0) deadlocks anything

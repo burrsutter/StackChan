@@ -93,6 +93,11 @@ bool Motion::isMoving()
     return _yaw_servo->isMoving() || _pitch_servo->isMoving();
 }
 
+bool Motion::isAnimating()
+{
+    return _yaw_servo->isAnimating() || _pitch_servo->isAnimating();
+}
+
 int Motion::getCurrentYawAngle()
 {
     return _yaw_servo->getCurrentAngle();

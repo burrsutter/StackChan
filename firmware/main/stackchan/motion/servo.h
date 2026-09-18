@@ -89,6 +89,17 @@ public:
     bool isMoving();
 
     /**
+     * @brief Whether the commanded animation is still in flight. Unlike
+     * isMoving() this never touches the servo bus, so it is safe to call
+     * from a task other than the one running update(). The physical servo
+     * can trail the animation by a few tens of ms.
+     */
+    bool isAnimating()
+    {
+        return !_angle_anim.done();
+    }
+
+    /**
      * @brief
      *
      * @param enabled

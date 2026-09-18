@@ -149,6 +149,7 @@ public:
     void lookAtPoint(float x, float y, float z, int speed = 500);
 
     bool isMoving();
+    bool isAnimating();  // bus-free, safe from any task; see Servo::isAnimating()
     uitk::Vector2i getCurrentAngles();
     int getCurrentYawAngle();
     int getCurrentPitchAngle();

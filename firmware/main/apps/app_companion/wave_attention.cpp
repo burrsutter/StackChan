@@ -131,8 +131,13 @@ void WaveAttention::run()
             continue;
         }
 
-        // Everything moves in the frame while the head moves — skip and settle
-        if (GetStackChan().motion().isMoving()) {
+        // Everything moves in the frame while the head moves — skip and settle.
+        // isAnimating(), not isMoving(): this runs on its own task, and
+        // isMoving() reads the servo bus, which the main loop is already
+        // using -- overlapping transactions cross replies between the two
+        // servos ("wrong servo id") and drop reads. SETTLE_MS covers the
+        // physical lag behind the animation.
+        if (GetStackChan().motion().isAnimating()) {
             settle_until = GetHAL().millis() + SETTLE_MS;
             reset_wave_state();
             continue;
