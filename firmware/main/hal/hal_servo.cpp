@@ -9,6 +9,7 @@
 #include <smooth_ui_toolkit.hpp>
 #include <mooncake_log.h>
 #include <settings.h>
+#include <string>
 
 using namespace smooth_ui_toolkit;
 using namespace stackchan::motion;
@@ -44,8 +45,8 @@ public:
 
         if (ok) {
             if (_failing) {
-                mclog::tagInfo(_tag, "bus recovered after {} ms, {} power pulse(s)", now - _fail_since,
-                               _pulse_count);
+                mclog::tagInfo(_tag, "bus recovered after {} ms, {} power pulse(s), battery {}", now - _fail_since,
+                               _pulse_count, battery_info());
             }
             _failing     = false;
             _pulse_count = 0;
@@ -58,8 +59,8 @@ public:
             _fail_since = now;
             _next_pulse = now + kFirstPulseDelayMs;
             _last_err   = err;
-            mclog::tagWarn(_tag, "bus reads failing ({}); will pulse servo power in {} ms if it stays silent",
-                           err_name(err), kFirstPulseDelayMs);
+            mclog::tagWarn(_tag, "bus reads failing ({}), battery {}; will pulse servo power in {} ms if it stays silent",
+                           err_name(err), battery_info(), kFirstPulseDelayMs);
             return;
         }
 
@@ -81,8 +82,8 @@ public:
             case State::Idle:
                 if (static_cast<int32_t>(now - _next_pulse) >= 0) {
                     _pulse_count++;
-                    mclog::tagWarn(_tag, "bus silent for {} ms ({}); pulsing servo power, attempt {}",
-                                   now - _fail_since, err_name(err), _pulse_count);
+                    mclog::tagWarn(_tag, "bus silent for {} ms ({}), battery {}; pulsing servo power, attempt {}",
+                                   now - _fail_since, err_name(err), battery_info(), _pulse_count);
                     GetHAL().setServoPowerEnabled(false);
                     _power_off_tick = now;
                     _state          = State::PowerOff;
@@ -111,6 +112,14 @@ private:
     static constexpr uint32_t kFirstPulseDelayMs = 3000;   // silence tolerated before the first pulse
     static constexpr uint32_t kMaxPulseDelayMs   = 60000;  // backoff ceiling between pulses
     static constexpr uint32_t kPowerOffMs        = 300;    // how long VM EN is held low per pulse
+
+    // Battery state at the moment of a bus event, so a future freeze's log
+    // shows whether it coincided with low charge or with charging draw.
+    static std::string battery_info()
+    {
+        return std::to_string(GetHAL().getBatteryLevel()) + "% " +
+               (GetHAL().isBatteryCharging() ? "charging" : "discharging");
+    }
 
     static const char* err_name(uint8_t err)
     {

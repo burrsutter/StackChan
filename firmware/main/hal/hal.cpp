@@ -125,6 +125,7 @@ void Hal::updateHeapStatusLog()
     }
     last_log_tick = millis();
     SystemInfo::PrintHeapStats();
+    mclog::tagInfo(_tag, "battery: {}% {}", getBatteryLevel(), isBatteryCharging() ? "charging" : "discharging");
 }
 
 /* -------------------------------------------------------------------------- */
