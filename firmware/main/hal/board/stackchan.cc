@@ -643,6 +643,16 @@ public:
         WifiBoard::SetPowerSaveLevel(level);
     }
 
+    // Reset the idle sleep/shutdown timer without touching WiFi power-save
+    // state (unlike SetPowerSaveLevel, which also reconfigures the radio).
+    // Companion mode calls this on real user interaction -- a detected wave,
+    // a head pet -- since it never goes through the Xiaozhi voice path that
+    // normally keeps the timer alive.
+    void NotifyUserInteraction()
+    {
+        power_save_timer_->WakeUp();
+    }
+
     virtual Backlight* GetBacklight() override
     {
         static CustomBacklight backlight(pmic_);
@@ -668,6 +678,12 @@ StackChanCamera* hal_bridge::board_get_camera()
     auto& board = Board::GetInstance();
     auto camera = (StackChanCamera*)board.GetCamera();
     return camera;
+}
+
+void hal_bridge::board_notify_user_interaction()
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    board.NotifyUserInteraction();
 }
 
 int hal_bridge::board_get_battery_level()

@@ -68,6 +68,12 @@ public:
 private:
     void handle_swipe(Modifiable& stackchan)
     {
+        // A real touch just happened -- reset the idle sleep/shutdown timer.
+        // Companion mode never goes through the Xiaozhi voice path that
+        // normally does this, so without it the board powers itself off on
+        // battery after its idle timeout no matter how much it's being pet.
+        GetHAL().notifyUserInteraction();
+
         auto& avatar = stackchan.avatar();
 
         // 首次进入开心状态，记录原始信息

@@ -140,6 +140,12 @@ void AppCompanion::react_to_wave(float x)
 {
     mclog::tagInfo(getAppInfo().name, "reacting to wave at x {:.2f}", x);
 
+    // A greeter showed up -- this is genuine engagement, so reset the idle
+    // shutdown timer. Companion never goes through the Xiaozhi voice path
+    // that normally does this, so without it the board powers itself off on
+    // battery after its idle timeout no matter how active it looks on screen.
+    GetHAL().notifyUserInteraction();
+
     auto& stackchan = GetStackChan();
 
     // Hold still and give the greeter full attention

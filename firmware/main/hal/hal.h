@@ -192,6 +192,16 @@ public:
     void updateHeapStatusLog();
     uint8_t getBatteryLevel();
     bool isBatteryCharging();
+
+    /**
+     * @brief Reset the board's idle sleep/shutdown timer. Call this on real
+     * user interaction (not background idle motion) in apps that don't go
+     * through the Xiaozhi voice path, which is the only thing that normally
+     * keeps the timer alive -- otherwise the board auto-shuts-down on
+     * battery after its configured idle timeout regardless of what the app
+     * is doing on screen.
+     */
+    void notifyUserInteraction();
     void factoryReset();
 
     /* --------------------------------- Display -------------------------------- */
