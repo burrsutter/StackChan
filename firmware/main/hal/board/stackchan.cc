@@ -379,7 +379,18 @@ private:
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
         });
-        power_save_timer_->OnShutdownRequest([this]() { pmic_->PowerOff(); });
+        power_save_timer_->OnShutdownRequest([this]() {
+            // Nothing else logs the moment of shutdown, and a real power-off
+            // leaves no trace after the fact -- log the state that triggered
+            // it so a silent "it died" is diagnosable from the last lines in
+            // the log rather than a mystery.
+            ESP_LOGW(TAG,
+                     "idle shutdown timer fired -- powering off. battery=%d%% charging=%d discharging=%d "
+                     "external_power=%d",
+                     pmic_->GetBatteryLevel(), pmic_->IsCharging(), pmic_->IsDischarging(),
+                     pmic_->IsExternalPowerConnected());
+            pmic_->PowerOff();
+        });
         UpdatePowerSaveEnabled(pmic_->IsExternalPowerConnected(), pmic_->IsDischarging());
     }
 
