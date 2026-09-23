@@ -29,8 +29,8 @@ void AppLauncher::onLauncherOpen()
     if (!_startup_checked && !GetHAL().isAppConfiged()) {
         mclog::tagInfo(getAppInfo().name, "app not configured, start startup worker");
         _startup_worker = std::make_unique<setup_workers::StartupWorker>();
-    } else if (try_autostart_companion()) {
-        // Companion app opens instead; launcher view is created on next open
+    } else if (try_autostart_default_app()) {
+        // Default app opens instead; launcher view is created on next open
     } else {
         create_launcher_view();
     }
@@ -79,25 +79,31 @@ void AppLauncher::create_launcher_view()
     };
 }
 
-bool AppLauncher::try_autostart_companion()
+bool AppLauncher::try_autostart_default_app()
 {
     // Only on cold boot: skip if already attempted, or if this boot is a warm
     // reboot back from another app (the launcher view restores its position)
-    if (_companion_autostart_done) {
+    if (_default_app_autostart_done) {
         return false;
     }
-    _companion_autostart_done = true;
+    _default_app_autostart_done = true;
 
     if (GetHAL().getWarmRebootTarget() >= 0) {
         return false;
     }
 
+    // The app a cold boot lands in. DANCE listens to the room: it looks
+    // around inquisitively when it hears voices and nods along once music is
+    // playing, so it covers what COMPANION did and adds to it.
+    constexpr const char* kDefaultAppName = "DANCE";
+
     for (const auto& props : getAppProps()) {
-        if (props.info.name == "COMPANION") {
-            mclog::tagInfo(getAppInfo().name, "auto opening companion app, id: {}", props.appID);
+        if (props.info.name == kDefaultAppName) {
+            mclog::tagInfo(getAppInfo().name, "auto opening {} app, id: {}", kDefaultAppName, props.appID);
             return openApp(props.appID);
         }
     }
+    mclog::tagWarn(getAppInfo().name, "default app {} not found, showing launcher", kDefaultAppName);
     return false;
 }
 

@@ -172,3 +172,69 @@ void Hal::clearupMicTest()
         audio_codec->EnableInput(false);
     }
 }
+
+bool Hal::micCaptureStart()
+{
+    auto& board      = Board::GetInstance();
+    auto audio_codec = board.GetAudioCodec();
+    if (!audio_codec) {
+        mclog::tagError(_tag, "audio codec unavailable for mic capture");
+        return false;
+    }
+
+    if (!audio_codec->input_enabled()) {
+        audio_codec->EnableInput(true);
+    }
+    mclog::tagInfo(_tag, "mic capture started");
+    return true;
+}
+
+bool Hal::micCaptureRead(std::vector<int16_t>& data, size_t frames)
+{
+    auto& board      = Board::GetInstance();
+    auto audio_codec = board.GetAudioCodec();
+    if (!audio_codec) {
+        return false;
+    }
+
+    // Read() hands back the requested sample count even when input is
+    // disabled, leaving the buffer untouched -- so a caller that kept reading
+    // after a stop would spin on stale data at full speed instead of
+    // blocking. Check explicitly rather than trusting the return value.
+    if (!audio_codec->input_enabled()) {
+        return false;
+    }
+
+    // Reused across calls rather than reallocated: capture runs continuously
+    // at roughly 90 reads a second, and there is only ever one capture stream
+    // (the caller owns it between micCaptureStart() and micCaptureStop()).
+    static std::vector<int16_t> interleaved;
+
+    const size_t input_channels = std::max(audio_codec->input_channels(), 1);
+    interleaved.resize(frames * input_channels);
+    if (!audio_codec->InputData(interleaved)) {
+        return false;
+    }
+
+    // Channel 0 is the microphone; channel 1, when present, is the speaker
+    // reference used for echo cancellation and is not wanted here.
+    data.resize(frames);
+    for (size_t i = 0; i < frames; ++i) {
+        data[i] = interleaved[i * input_channels];
+    }
+    return true;
+}
+
+void Hal::micCaptureStop()
+{
+    auto& board      = Board::GetInstance();
+    auto audio_codec = board.GetAudioCodec();
+    if (!audio_codec) {
+        return;
+    }
+
+    if (audio_codec->input_enabled()) {
+        audio_codec->EnableInput(false);
+    }
+    mclog::tagInfo(_tag, "mic capture stopped");
+}

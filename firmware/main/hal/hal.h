@@ -311,6 +311,30 @@ public:
     void getMicWaveformFrame(std::vector<int16_t>& data);
     void clearupMicTest();
 
+    /**
+     * @brief Open the microphone for continuous capture.
+     *
+     * For callers that want a live audio stream rather than the one-shot
+     * capture startMicTest()/getMicWaveformFrame() do. Pair with
+     * micCaptureStop(); reads between the two come back as mono.
+     *
+     * @return false if the codec is unavailable
+     */
+    bool micCaptureStart();
+
+    /**
+     * @brief Read the next chunk of microphone audio.
+     *
+     * Blocks until `frames` samples are captured (frames / 24000 seconds).
+     * The codec hands back interleaved mic + AEC reference; this returns only
+     * the mic channel, so `data` holds exactly `frames` mono samples.
+     *
+     * @return false if capture is not running or the read failed
+     */
+    bool micCaptureRead(std::vector<int16_t>& data, size_t frames);
+
+    void micCaptureStop();
+
 private:
     bool _xiaozhi_start_requested = false;
 
