@@ -58,7 +58,7 @@ struct DanceMoveParams_t {
     // animation, and a soft spring takes ~200 ms to reach the bottom, which
     // at 138 BPM is half a beat behind the music. Driving it hard cuts that
     // roughly in half. Lower it if the head starts to sound harsh.
-    int nodDownSpeed = 900;
+    int nodDownSpeed = 650;
     int nodUpSpeed   = 420;
 
     /* ------------------------ Optional yaw sway --------------------------- */
@@ -67,9 +67,20 @@ struct DanceMoveParams_t {
     int yawCenter = 0;
     int yawSwing  = 0;
 
-    // Note: there is deliberately no resting-pose setting here. When the music
-    // stops the head is handed back to the Companion-style idle look-around,
-    // which owns its own posture.
+    // Mechanical yaw trim, in tenth-degrees. Commanding yaw 0 does not
+    // necessarily point the head straight ahead: the servo horn's mounting
+    // position sets where zero physically lands, and on this unit the head
+    // rests slightly toward the robot's right shoulder. This offset is added
+    // to the neutral pose to correct that. ~10 units per degree.
+    //
+    // SIGN IS UNVERIFIED on this hardware -- the firmware carries per-feature
+    // sign constants elsewhere for exactly this reason. If a negative value
+    // makes it worse rather than better, flip to positive.
+    int yawNeutralOffset = -200;  // sign probe: ~20 degrees, deliberately obvious
+
+    // The resting pose is pitchCenter with yaw centred: the head parks there
+    // when the app opens and returns there when the music stops, so a nod
+    // always reads against the same still starting position.
 
     /* ----------------------- Safety clamps (hard stops) --------------------- */
     // Nothing the choreography computes is allowed outside this window,
@@ -142,8 +153,39 @@ struct BeatDetectParams_t {
     uint32_t minBeatIntervalMs = 250;
 };
 
+/*
+ * Head LEDs while music is playing.
+ *
+ * Only indices 0-5 light on this unit -- the bar on stage right. 6-11 are
+ * wired but dead, so the flash is one-sided by nature of the hardware.
+ */
+struct DanceLedParams_t {
+    // A fresh random hue on every beat, rather than one fixed colour. Set
+    // false to hold fixedColor instead.
+    bool randomHue = true;
+
+    // Consecutive hues are forced at least this far apart on the colour wheel
+    // (degrees), so two beats running never look like the same colour.
+    int minHueStepDeg = 70;
+
+    // Used when randomHue is false. Defaults to the dance magenta that the
+    // face uses in this mode.
+    uint8_t fixedR = 0xC2;
+    uint8_t fixedG = 0x15;
+    uint8_t fixedB = 0x8A;
+
+    // Resting brightness between beats, 0-1. The beat flashes to full and
+    // fades back to this.
+    float glowLevel = 0.18f;
+
+    // How long the flash takes to fade back to the glow. Matched to the nod
+    // so the light tracks the head rather than outrunning it.
+    uint32_t fadeMs = 220;
+};
+
 // The live values used by the DANCE app. Edit the struct defaults above.
 inline constexpr DanceMoveParams_t kDanceMoves{};
 inline constexpr BeatDetectParams_t kBeatDetect{};
+inline constexpr DanceLedParams_t kDanceLeds{};
 
 }  // namespace dance

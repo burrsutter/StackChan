@@ -17,10 +17,31 @@ namespace stackchan {
  * @brief
  *
  */
+/**
+ * @brief Bounds on what idle motion is allowed to do. The defaults reproduce
+ * the original behaviour exactly, so callers that pass nothing are unchanged.
+ * A caller that wants calmer motion can tighten the travel, cap the speed, and
+ * turn off the big fast "quick glance" -- which swings the yaw +-500 at speed
+ * 400 and is by far the harshest thing the idle loop does.
+ */
+struct IdleMotionLimits_t {
+    int yawMax   = 800;  // absolute bound on yaw targets
+    int pitchMin = 0;
+    int pitchMax = 600;
+
+    int speedMin = 100;  // speeds are clamped into this window
+    int speedMax = 400;
+
+    // When true, only small offsets from the current pose and the occasional
+    // yaw-recentre are used: no wide look-arounds, no quick glances.
+    bool smallMovesOnly = false;
+};
+
 class IdleMotionModifier : public Modifier {
 public:
-    IdleMotionModifier(uint32_t interval_min = 4000, uint32_t interval_max = 8000)
-        : _interval_min(interval_min), _interval_max(interval_max)
+    IdleMotionModifier(uint32_t interval_min = 4000, uint32_t interval_max = 8000,
+                       const IdleMotionLimits_t& limits = IdleMotionLimits_t{})
+        : _interval_min(interval_min), _interval_max(interval_max), _limits(limits)
     {
         _next_tick = GetHAL().millis() + 1000;  // 启动 1 秒后开始第一次动作
     }
@@ -73,11 +94,16 @@ private:
 
         int action = Random::getInstance().getInt(0, 100);
 
+        // Calm profile: small offsets most of the time, an occasional recentre.
+        if (_limits.smallMovesOnly) {
+            action = (action < 80) ? 50 : 95;
+        }
+
         if (action < 50) {
             // 【动作 1：随意环视】使用归一化坐标 (-1.0 ~ 1.0)
             float target_x = Random::getInstance().getFloat(-0.4f, 0.4f);   // 左右看
             float target_y = Random::getInstance().getFloat(-0.95f, 0.2f);  // 上下看
-            int speed      = Random::getInstance().getInt(150, 300);
+            int speed      = clamp_speed(Random::getInstance().getInt(150, 300));
 
             // mclog::info("action 1: look at normalized ({}, {}) in speed {}", target_x, target_y, speed);
             motion.lookAtNormalized(target_x, target_y, speed);
@@ -88,32 +114,40 @@ private:
             int diff_yaw   = Random::getInstance().getInt(-150, 150);
             int diff_pitch = Random::getInstance().getInt(-80, 80);
 
-            int target_yaw   = uitk::clamp(current.x + diff_yaw, -800, 800);
-            int target_pitch = uitk::clamp(current.y + diff_pitch, 0, 600);
-            int speed        = Random::getInstance().getInt(100, 250);
+            int target_yaw   = uitk::clamp(current.x + diff_yaw, -_limits.yawMax, _limits.yawMax);
+            int target_pitch = uitk::clamp(current.y + diff_pitch, _limits.pitchMin, _limits.pitchMax);
+            int speed        = clamp_speed(Random::getInstance().getInt(100, 250));
 
             // mclog::info("action 2: small move to ({}, {}) in speed {}", target_yaw, target_pitch, speed);
             motion.moveWithSpeed(target_yaw, target_pitch, speed);
         } else if (action < 90) {
             // 【动作 3：快速撇一眼】速度快，跨度中等
-            int target_yaw   = Random::getInstance().getInt(-500, 500);
-            int target_pitch = Random::getInstance().getInt(100, 400);
-            int speed        = Random::getInstance().getInt(250, 400);
+            int target_yaw   = uitk::clamp(Random::getInstance().getInt(-500, 500), -_limits.yawMax, _limits.yawMax);
+            int target_pitch =
+                uitk::clamp(Random::getInstance().getInt(100, 400), _limits.pitchMin, _limits.pitchMax);
+            int speed        = clamp_speed(Random::getInstance().getInt(250, 400));
 
             // mclog::info("action 3: quick glance to ({}, {}) in speed {}", target_yaw, target_pitch, speed);
             motion.moveWithSpeed(target_yaw, target_pitch, speed);
         } else {
             // 【动作 4：yaw 回正】
-            int target_pitch = Random::getInstance().getInt(50, 400);
-            int speed        = Random::getInstance().getInt(100, 300);
+            int target_pitch =
+                uitk::clamp(Random::getInstance().getInt(50, 400), _limits.pitchMin, _limits.pitchMax);
+            int speed        = clamp_speed(Random::getInstance().getInt(100, 300));
 
             // mclog::info("action 4: go home to (0, {}) in speed {}", target_pitch, speed);
             motion.moveWithSpeed(0, target_pitch, speed);
         }
     }
 
+    int clamp_speed(int speed) const
+    {
+        return uitk::clamp(speed, _limits.speedMin, _limits.speedMax);
+    }
+
     uint32_t _interval_min;
     uint32_t _interval_max;
+    IdleMotionLimits_t _limits;
     uint32_t _next_tick = 0;
     bool _paused        = false;
 };
