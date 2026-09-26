@@ -64,6 +64,12 @@ void AppCompanion::onOpen()
 
         // Same liveliness as the AI agent mode, without starting Xiaozhi:
         // no wake word, no mic streaming, no cloud calls
+        // Relax the servos when the head is at rest. Without this the pitch
+        // servo holds against gravity for as long as the app is open; only the
+        // Xiaozhi voice path ever enabled it, so every other app paid a
+        // standing current cost for nothing.
+        stackchan.motion().setAutoTorqueReleaseEnabled(true);
+
         stackchan.clearModifiers();
         stackchan.addModifier(std::make_unique<BreathModifier>());
         stackchan.addModifier(std::make_unique<BlinkModifier>());

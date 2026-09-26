@@ -114,8 +114,25 @@ void AppDance::onOpen()
     // smooth and modest; the nodding is what should draw the eye.
     {
         auto& stackchan = GetStackChan();
+
+        // Let the servos relax when the head is not moving. Only
+        // Hal::startXiaozhi() ever turned this on, so every app outside the
+        // voice path held torque continuously -- the pitch servo fighting
+        // gravity for as long as the app was open. That standing current, not
+        // just the movement spikes, is what loaded the rail hard enough to
+        // upset the servo bus. The AI Agent mode has always done this.
+        stackchan.motion().setAutoTorqueReleaseEnabled(true);
+
         stackchan.clearModifiers();
+
+        // Breath and idle expression are avatar-only -- they move the face on
+        // screen, never the servos -- so they cost nothing on the rail and are
+        // most of what makes the robot read as continuously alive rather than
+        // still-then-twitch. clearModifiers() above drops the default stack,
+        // so an app that wants them has to say so.
+        stackchan.addModifier(std::make_unique<BreathModifier>());
         stackchan.addModifier(std::make_unique<BlinkModifier>());
+        stackchan.addModifier(std::make_unique<IdleExpressionModifier>());
 
         IdleMotionLimits_t calm;
         calm.yawMax         = 250;  // +-25 deg, well inside the safety window
@@ -340,7 +357,11 @@ void AppDance::park_at_neutral()
     // returns to, so a dip reads as a nod away from a known rest rather than
     // from wherever the head happened to stop.
     auto& motion = GetStackChan().motion();
-    motion.setAutoAngleSyncEnabled(false);
+
+    // Sync from the servo's actual angle first: with torque release enabled the
+    // head can droop or be moved by hand while idle, and animating from a stale
+    // commanded pose would start the move with a jump.
+    motion.setAutoAngleSyncEnabled(true);
     _nod_yaw  = std::clamp(kDanceMoves.yawNeutralOffset, kDanceMoves.yawSafeMin, kDanceMoves.yawSafeMax);
     _nod_down = false;
     motion.moveWithSpeed(_nod_yaw,
