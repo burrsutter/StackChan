@@ -38,14 +38,31 @@ void Servo::init()
 void Servo::update()
 {
     // Keep update in at most 50Hz
-    if (GetHAL().millis() - _last_tick < 20) {
+    const uint32_t now     = GetHAL().millis();
+    const uint32_t elapsed = now - _last_tick;
+    if (elapsed < 20) {
         return;
     }
-    _last_tick = GetHAL().millis();
+    _last_tick = now;
+
+    // Advance the spring by the time that actually passed, not by a fixed
+    // 20ms. This is driven from the app loop, which also runs LVGL, the
+    // camera and the mic, so its real interval varies: feeding it a constant
+    // delta made the head move at whatever rate the loop happened to run --
+    // slower under load, and uneven whenever the loop hitched. That is what
+    // made the motion read as jerky rather than smooth.
+    //
+    // The delta is capped so that a long stall (a slow frame, a blocking bus
+    // retry) advances the animation by at most one big step instead of
+    // teleporting the head across its travel in a single write.
+    float delta_s = static_cast<float>(elapsed) / 1000.0f;
+    if (delta_s > 0.1f) {
+        delta_s = 0.1f;
+    }
 
     // Apply animation
     if (!_angle_anim.done()) {
-        _angle_anim.updateWithDelta(0.02f);  // Fixed delta time for consistency
+        _angle_anim.updateWithDelta(delta_s);
         set_angle_impl(static_cast<int>(_angle_anim.directValue()));
     }
 

@@ -16,6 +16,7 @@ using namespace stackchan::motion;
 
 static SCSCL _scs_bus;
 
+
 /*
  * Servo bus watchdog.
  *
@@ -50,6 +51,7 @@ public:
             }
             _failing     = false;
             _pulse_count = 0;
+            _gave_up     = false;
             _state       = State::Idle;
             return;
         }
@@ -84,6 +86,21 @@ public:
                     _pulse_count++;
                     mclog::tagWarn(_tag, "bus silent for {} ms ({}), battery {}; pulsing servo power, attempt {}",
                                    now - _fail_since, err_name(err), battery_info(), _pulse_count);
+                    if (_pulse_count > kMaxPulseAttempts) {
+                        // Out of attempts. A bus this dead is not coming back
+                        // from another power cycle, and each pulse risks
+                        // taking the whole board down -- so stop, and let the
+                        // head be still rather than kill the robot retrying.
+                        if (!_gave_up) {
+                            _gave_up = true;
+                            mclog::tagError(_tag,
+                                            "bus still silent after {} power pulses; giving up, servo rail left on",
+                                            kMaxPulseAttempts);
+                        }
+                        _next_pulse = now + kMaxPulseDelayMs;
+                        _state      = State::Idle;
+                        break;
+                    }
                     GetHAL().setServoPowerEnabled(false);
                     _power_off_tick = now;
                     _state          = State::PowerOff;
@@ -109,9 +126,17 @@ public:
 private:
     enum class State { Idle, PowerOff };
 
-    static constexpr uint32_t kFirstPulseDelayMs = 3000;   // silence tolerated before the first pulse
+    // Silence tolerated before the first pulse. Raised from 3s: cutting and
+    // restoring the servo rail draws an inrush spike that has been observed to
+    // take the whole board down (it died SOONER on a 3A supply than a 500mA
+    // one -- the opposite of a supply shortage). Transient bus errors recover
+    // on their own in 13-60ms, and a run logging 7192 of them survived fine
+    // with no pulses at all, so only a genuinely dead bus should earn one.
+    static constexpr uint32_t kFirstPulseDelayMs = 15000;
     static constexpr uint32_t kMaxPulseDelayMs   = 60000;  // backoff ceiling between pulses
     static constexpr uint32_t kPowerOffMs        = 300;    // how long VM EN is held low per pulse
+    // Bounded retries: a pulse is a risky operation, so never thrash on one.
+    static constexpr uint32_t kMaxPulseAttempts = 3;
 
     // Battery state at the moment of a bus event, so a future freeze's log
     // shows whether it coincided with low charge or with charging draw.
@@ -143,6 +168,7 @@ private:
     uint32_t _next_pulse     = 0;
     uint32_t _power_off_tick = 0;
     uint32_t _pulse_count    = 0;
+    bool _gave_up            = false;
     uint8_t _last_err        = 0;
 };
 
