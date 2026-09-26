@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MIT
  */
 #include "hal.h"
+#include "board/hal_bridge.h"
+#include <driver/temperature_sensor.h>
 #include <memory>
 #include <mooncake_log.h>
 #include <nvs_flash.h>
@@ -115,9 +117,57 @@ static void _confirm_ota_image_if_stable()
     }
 }
 
+// ESP32-S3 on-die temperature. Separate from the PMIC's own die sensor: this
+// one says how hot the SoC is, the PMIC's says how hot the power path is, and
+// only having both distinguishes general board heat from a hot regulator.
+static float _read_soc_temp_celsius()
+{
+    static temperature_sensor_handle_t handle = nullptr;
+    if (handle == nullptr) {
+        temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 110);
+        if (temperature_sensor_install(&cfg, &handle) != ESP_OK) {
+            return -1000.0f;
+        }
+        if (temperature_sensor_enable(handle) != ESP_OK) {
+            return -1000.0f;
+        }
+    }
+    float celsius = 0.0f;
+    if (temperature_sensor_get_celsius(handle, &celsius) != ESP_OK) {
+        return -1000.0f;
+    }
+    return celsius;
+}
+
+void Hal::updatePowerTelemetryLog()
+{
+    // Sampled every 2s rather than the 10s of the heap log: the board has been
+    // dying abruptly between 10s samples, so the trend right up to the cut was
+    // never captured. Uptime is logged explicitly so time-of-death needs no
+    // clock arithmetic to pin down.
+    static uint32_t last_tick = 0;
+    uint32_t now              = millis();
+    if (last_tick != 0 && now - last_tick < 2000) {
+        return;
+    }
+    last_tick = now;
+
+    int adc[4] = {-1, -1, -1, -1};
+    hal_bridge::board_get_adc_block(adc);
+
+    // The gauge percentage is kept in the line only for comparison: it read a
+    // stuck 100% while the charger was still in bulk-charge phase, so the ADC
+    // values below are the trustworthy ones.
+    mclog::tagInfo(_tag, "pwr up={}s batt={}% {} ext={} axp=0x{:04X} adc=[{},{},{},{}]", now / 1000,
+                   getBatteryLevel(), isBatteryCharging() ? "chg" : "dis", isExternalPowerConnected() ? 1 : 0,
+                   hal_bridge::board_get_power_status_regs(), adc[0], adc[1], adc[2], adc[3]);
+}
+
 void Hal::updateHeapStatusLog()
 {
     _confirm_ota_image_if_stable();
+
+    updatePowerTelemetryLog();
 
     static uint32_t last_log_tick = 0;
     if (millis() - last_log_tick < 10000) {
@@ -125,7 +175,14 @@ void Hal::updateHeapStatusLog()
     }
     last_log_tick = millis();
     SystemInfo::PrintHeapStats();
-    mclog::tagInfo(_tag, "battery: {}% {}", getBatteryLevel(), isBatteryCharging() ? "charging" : "discharging");
+    // External power is logged alongside the charge state because they
+    // disagree in the case that matters: a full battery on USB reads
+    // "discharging" with the cable still in, and that disagreement used to
+    // arm the idle shutdown. The raw AXP2101 status registers make the
+    // decision auditable from the log alone.
+    mclog::tagInfo(_tag, "battery: {}% {} external_power={} axp_status=0x{:04X}", getBatteryLevel(),
+                   isBatteryCharging() ? "charging" : "discharging", isExternalPowerConnected() ? 1 : 0,
+                   hal_bridge::board_get_power_status_regs());
 }
 
 /* -------------------------------------------------------------------------- */
@@ -232,6 +289,11 @@ uint8_t Hal::getBatteryLevel()
 bool Hal::isBatteryCharging()
 {
     return hal_bridge::board_is_battery_charging();
+}
+
+bool Hal::isExternalPowerConnected()
+{
+    return hal_bridge::board_is_external_power_connected();
 }
 
 void Hal::notifyUserInteraction()

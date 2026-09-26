@@ -113,6 +113,24 @@ public:
             ESP_LOGI(TAG, "Set charge current success");
         }
 
+        // Log what the charger is actually configured to pull. Nothing meters
+        // USB current on this board, so these registers are the only
+        // statement available about how much of the port's 500 mA allowance
+        // the PMIC believes it may take. None of the three input limits is
+        // ever written by this firmware, so these are power-on defaults:
+        //   0x15 = VBUS input voltage limit (VINDPM -- the sag threshold at
+        //          which the PMIC throttles its own input draw)
+        //   0x16 = VBUS input current limit (the hard cap on what the board
+        //          can pull from the port, whatever the port would allow)
+        //   0x62 = battery charge constant-current, set just above
+        ESP_LOGI(TAG, "PMIC input limits: vin_dpm(0x15)=0x%02X in_curr(0x16)=0x%02X charge_cc(0x62)=0x%02X",
+                 ReadReg(0x15), ReadReg(0x16), ReadReg(0x62));
+
+        // Dumped first thing at boot: if the previous run ended in a PMIC-level
+        // power-off with no software trace, the reason may still be latched here.
+        ESP_LOGW(TAG, "PMIC latched irq at boot: 0x48=0x%02X 0x49=0x%02X 0x4A=0x%02X  die_temp_raw=0x%04X",
+                 ReadReg(0x48), ReadReg(0x49), ReadReg(0x4A), ReadDieTempRaw());
+
         SetBrightness(0);
     }
 
@@ -190,6 +208,55 @@ public:
         // Treat any non-discharging state as externally powered so a plugged-in cable
         // still counts even after the battery is full.
         return current_direction != 2 || is_charging_done;
+    }
+
+    // Raw status registers, for diagnosing power-state decisions after the fact.
+    int ReadPowerStatusRegs(int& status1, int& status2)
+    {
+        status1 = ReadReg(0x00);
+        status2 = ReadReg(0x01);
+        return 0;
+    }
+
+    // Raw die-temperature ADC (0xA5 high, 0xA6 low). Logged un-converted: the
+    // AXP2101 scaling is not established here, and a rising raw trend is what
+    // the thermal question actually needs -- an invented conversion would only
+    // look authoritative while being wrong.
+    int ReadDieTempRaw()
+    {
+        const int hi = ReadReg(0xA5);
+        const int lo = ReadReg(0xA6);
+        if (hi == -1 || lo == -1) {
+            return -1;
+        }
+        return ((hi & 0xFF) << 8) | (lo & 0xFF);
+    }
+
+    // AXP2101 ADC result block, 0x34..0x3B, as four raw 16-bit big-endian pairs.
+    // Which pair is battery / VBUS / VSYS is NOT asserted here: an earlier guess
+    // at a register address from memory was wrong (0x15 is the input VOLTAGE
+    // limit, not current), so these are logged raw and identified empirically by
+    // magnitude -- battery sits near 3700-4200 mV, VBUS near 5000, and that is
+    // unambiguous without trusting a recalled register map.
+    void ReadAdcBlock(int out[4])
+    {
+        for (int i = 0; i < 4; i++) {
+            const int hi = ReadReg(0x34 + i * 2);
+            const int lo = ReadReg(0x35 + i * 2);
+            out[i]       = (hi == -1 || lo == -1) ? -1 : (((hi & 0xFF) << 8) | (lo & 0xFF));
+        }
+    }
+
+    // Latched interrupt status. These record WHY the PMIC acted -- over-temperature,
+    // over-current, VBUS events -- so dumping them at boot can name the cause of a
+    // power-off that left no software trace. Read-only here: deliberately not
+    // cleared, since clearing them would destroy the evidence.
+    int ReadIrqStatus(int& irq0, int& irq1, int& irq2)
+    {
+        irq0 = ReadReg(0x48);
+        irq1 = ReadReg(0x49);
+        irq2 = ReadReg(0x4A);
+        return 0;
     }
 };
 
@@ -681,7 +748,7 @@ public:
         // SetEnabled(discharging) here: that ignored external power entirely
         // and fought PollPowerSaveState() over the same timer, so whichever
         // ran last won. Anything that polls the battery reaches this -- the
-        // periodic diagnostics log included -- which is how a plugged-in robot
+        // 10 s diagnostics log included -- which is how a plugged-in robot
         // ended up with its idle shutdown armed.
         UpdatePowerSaveEnabled(pmic_->IsExternalPowerConnected(), discharging);
 
@@ -705,6 +772,39 @@ public:
     void NotifyUserInteraction()
     {
         power_save_timer_->WakeUp();
+    }
+
+    bool IsExternalPowerConnected()
+    {
+        return pmic_->IsExternalPowerConnected();
+    }
+
+    int GetDieTempRaw()
+    {
+        return pmic_->ReadDieTempRaw();
+    }
+
+    void GetAdcBlock(int out[4])
+    {
+        pmic_->ReadAdcBlock(out);
+    }
+
+    // (IRQ0 << 16) | (IRQ1 << 8) | IRQ2
+    int GetIrqStatus()
+    {
+        int a = 0, b = 0, c = 0;
+        pmic_->ReadIrqStatus(a, b, c);
+        return ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF);
+    }
+
+    // (STATUS1 << 8) | STATUS2, so a log line can show what the power-state
+    // decision was actually based on.
+    int GetPowerStatusRegs()
+    {
+        int status1 = 0;
+        int status2 = 0;
+        pmic_->ReadPowerStatusRegs(status1, status2);
+        return ((status1 & 0xFF) << 8) | (status2 & 0xFF);
     }
 
     virtual Backlight* GetBacklight() override
@@ -751,6 +851,36 @@ int hal_bridge::board_get_battery_level()
     } else {
         return 100;
     }
+}
+
+bool hal_bridge::board_is_external_power_connected()
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    return board.IsExternalPowerConnected();
+}
+
+void hal_bridge::board_get_adc_block(int out[4])
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    board.GetAdcBlock(out);
+}
+
+int hal_bridge::board_get_die_temp_raw()
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    return board.GetDieTempRaw();
+}
+
+int hal_bridge::board_get_irq_status()
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    return board.GetIrqStatus();
+}
+
+int hal_bridge::board_get_power_status_regs()
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    return board.GetPowerStatusRegs();
 }
 
 bool hal_bridge::board_is_battery_charging()

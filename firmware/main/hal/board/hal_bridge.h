@@ -57,6 +57,18 @@ i2c_master_bus_handle_t board_get_i2c_bus();
 StackChanCamera* board_get_camera();
 int board_get_battery_level();
 bool board_is_battery_charging();
+// True when a cable is supplying the board, regardless of whether the battery
+// happens to be charging right now (a full battery on USB is not charging).
+bool board_is_external_power_connected();
+// Packed AXP2101 status registers, (STATUS1 << 8) | STATUS2, for diagnostics.
+int board_get_power_status_regs();
+// Raw AXP2101 die-temperature ADC (0xA5 << 8 | 0xA6), un-converted.
+int board_get_die_temp_raw();
+// Raw AXP2101 ADC results 0x34..0x3B as four 16-bit values (battery / VBUS /
+// VSYS / TS, assignment to be confirmed by magnitude rather than assumed).
+void board_get_adc_block(int out[4]);
+// Latched AXP2101 interrupt status, (0x48 << 16) | (0x49 << 8) | 0x4A.
+int board_get_irq_status();
 void board_notify_user_interaction();  // reset the idle sleep/shutdown timer
 void board_set_backlight_brightness(uint8_t brightness, bool permanent = false);
 uint8_t board_get_backlight_brightness();

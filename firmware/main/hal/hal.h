@@ -190,8 +190,10 @@ public:
     std::string getFactoryMacString(std::string divider = "");
     void reboot();
     void updateHeapStatusLog();
+    void updatePowerTelemetryLog();
     uint8_t getBatteryLevel();
     bool isBatteryCharging();
+    bool isExternalPowerConnected();
 
     /**
      * @brief Reset the board's idle sleep/shutdown timer. Call this on real
@@ -248,6 +250,9 @@ public:
 
     /* ---------------------------------- Power --------------------------------- */
     void setServoPowerEnabled(bool enabled);
+    // Number of LED positions the PY32 controller drives (max 32). Normally
+    // 12; a diagnostic can widen it to probe addresses beyond the usual range.
+    void setRgbLedCount(uint8_t count);
 
     /* -------------------------------- Websocket ------------------------------- */
     uitk::Signal<std::string_view> onWsMotionData;
