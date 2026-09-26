@@ -159,8 +159,30 @@ public:
         return true;
     }
 
+    // AXP2101 PMU_STATUS1 bit 5 -- VBUS present and within spec. This is the
+    // only direct statement the PMIC makes about a cable being plugged in;
+    // everything else is inferred from which way current happens to be
+    // flowing right now.
+    bool IsVbusGood()
+    {
+        const int power_status = ReadReg(0x00);
+        if (power_status == -1) {
+            return false;
+        }
+        return (power_status & 0b00100000) != 0;
+    }
+
     bool IsExternalPowerConnected()
     {
+        // Ask the PMIC directly first. The fallback below infers external
+        // power from current direction, which breaks in exactly the case that
+        // matters: a full battery on USB, where the charger has stopped and
+        // the board runs off the battery again, reporting "discharging" with
+        // the cable still in.
+        if (IsVbusGood()) {
+            return true;
+        }
+
         const uint8_t power_status      = ReadReg(0x01);
         const uint8_t current_direction = (power_status & 0b01100000) >> 5;
         const bool is_charging_done     = (power_status & 0b00000111) == 0b00000100;
@@ -328,7 +350,15 @@ private:
 
     bool ShouldEnablePowerSave(bool has_external_power, bool is_discharging) const
     {
-        return is_discharging || (has_external_power && xiaozhi_config_.allowShutdownWhenCharging);
+        // A cable in the socket is the deciding fact: the idle timer only runs
+        // while plugged in if the user asked for that. It used to be
+        // `is_discharging || ...`, which let a full battery -- the PMIC stops
+        // charging and reports "discharging" once it tops out, cable still in
+        // -- switch the idle shutdown on while the robot sat on USB power.
+        if (has_external_power) {
+            return xiaozhi_config_.allowShutdownWhenCharging;
+        }
+        return is_discharging;
     }
 
     void UpdatePowerSaveEnabled(bool has_external_power, bool is_discharging)
@@ -454,6 +484,16 @@ private:
             return;
         }
         auto& touch_point = ft6336_->GetTouchPoint();
+
+        // A finger on the screen is the most unambiguous user interaction
+        // there is, so it resets the idle sleep/shutdown timer. Without this
+        // the display enters power save mode and there is no way back: the
+        // only exits are WakeUp() calls, none of which the touch path made,
+        // so a blanked screen stayed blank until the shutdown timer finished
+        // the job.
+        if (touch_point.num > 0) {
+            power_save_timer_->WakeUp();
+        }
 
         // Update hal touch point
         hal_bridge::set_touch_point(touch_point.num, touch_point.x, touch_point.y);
@@ -634,13 +674,16 @@ public:
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override
     {
-        static bool last_discharging = false;
-        charging                     = pmic_->IsCharging();
-        discharging                  = pmic_->IsDischarging();
-        if (discharging != last_discharging) {
-            power_save_timer_->SetEnabled(discharging);
-            last_discharging = discharging;
-        }
+        charging    = pmic_->IsCharging();
+        discharging = pmic_->IsDischarging();
+
+        // Route this through the one place that decides, rather than calling
+        // SetEnabled(discharging) here: that ignored external power entirely
+        // and fought PollPowerSaveState() over the same timer, so whichever
+        // ran last won. Anything that polls the battery reaches this -- the
+        // periodic diagnostics log included -- which is how a plugged-in robot
+        // ended up with its idle shutdown armed.
+        UpdatePowerSaveEnabled(pmic_->IsExternalPowerConnected(), discharging);
 
         level = pmic_->GetBatteryLevel();
         return true;

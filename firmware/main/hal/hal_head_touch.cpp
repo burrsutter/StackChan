@@ -180,6 +180,16 @@ static void _head_touch_update_task(void* param)
         // Update and fire event
         gesture = recognizer.update(data);
         if (gesture != HeadPetGesture::None) {
+            // A confirmed stroke is a real hand on the robot, so reset the
+            // idle sleep/shutdown timer here at the source rather than in
+            // each listener: only the Xiaozhi voice path keeps that timer
+            // alive on its own, and every pet-aware modifier would otherwise
+            // have to remember to do this (LeanPetModifier, the one Companion
+            // actually installs, did not -- so petting the robot never kept
+            // it awake).
+            if (gesture == HeadPetGesture::SwipeForward || gesture == HeadPetGesture::SwipeBackward) {
+                GetHAL().notifyUserInteraction();
+            }
             GetHAL().onHeadPetGesture.emit(gesture);
         }
 

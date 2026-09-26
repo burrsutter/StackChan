@@ -47,6 +47,11 @@ private:
     // paused while the music has the head nodding.
     stackchan::IdleMotionModifier* _idle_motion = nullptr;
 
+    // Last time the idle sleep/shutdown timer was pushed back, so it is
+    // done once a second rather than on every 20ms frame.
+    uint32_t _last_engagement_tick = 0;
+
+    void note_engagement();
     void check_auto_angle_sync_mode();
     void update_music_dance();
     void move_to_beat(float strength);

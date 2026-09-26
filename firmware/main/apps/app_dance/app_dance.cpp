@@ -109,8 +109,9 @@ void AppDance::onOpen()
     /* ------------------------------ Music mode ------------------------------- */
     // Listen for a beat and groove to it. A connected BLE choreographer still
     // wins whenever it is sending motion -- see update_music_dance().
-    _beat_step       = 0;
-    _last_beat_tick  = 0;
+    _beat_step            = 0;
+    _last_beat_tick       = 0;
+    _last_engagement_tick = 0;
     _beat_detector.start();
 }
 
@@ -124,6 +125,7 @@ void AppDance::onRunning()
         GetStackChan().updateAvatarFromJson(_ble_avatar_data.data_ptr);
         _ble_avatar_data.update_flag = false;
         _ble_avatar_data.data_ptr    = nullptr;
+        note_engagement();
     }
 
     if (_ble_motion_data.update_flag) {
@@ -131,12 +133,14 @@ void AppDance::onRunning()
         GetStackChan().updateMotionFromJson(_ble_motion_data.data_ptr);
         _ble_motion_data.update_flag = false;
         _ble_motion_data.data_ptr    = nullptr;
+        note_engagement();
     }
 
     if (_ble_rgb_data.update_flag) {
         GetStackChan().updateNeonLightFromJson(_ble_rgb_data.data_ptr);
         _ble_rgb_data.update_flag = false;
         _ble_rgb_data.data_ptr    = nullptr;
+        note_engagement();
     }
 
     update_music_dance();
@@ -169,6 +173,24 @@ void AppDance::onClose()
     }
 
     GetHAL().requestWarmReboot(5);
+}
+
+void AppDance::note_engagement()
+{
+    // Something is actually going on -- a BLE client driving the robot, or
+    // music in the room -- so push back the board's idle sleep/shutdown
+    // timer. Only the Xiaozhi voice path resets that timer by itself, and
+    // DANCE deliberately never starts Xiaozhi, so without this the screen
+    // blanks after 5 minutes and the board powers itself off after 10 on
+    // battery no matter how hard it is dancing. Idle look-around alone does
+    // not count, by design: an unattended robot in a quiet room should still
+    // be allowed to shut down.
+    const uint32_t now = GetHAL().millis();
+    if (_last_engagement_tick != 0 && now - _last_engagement_tick < 1000) {
+        return;
+    }
+    _last_engagement_tick = now;
+    GetHAL().notifyUserInteraction();
 }
 
 void AppDance::check_auto_angle_sync_mode()
@@ -222,6 +244,9 @@ void AppDance::update_music_dance()
         }
         return;
     }
+
+    // Music is playing: someone is around and the robot is performing.
+    note_engagement();
 
     if (_idle_motion) {
         _idle_motion->pause();
