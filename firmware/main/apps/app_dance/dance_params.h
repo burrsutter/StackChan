@@ -67,16 +67,24 @@ struct DanceMoveParams_t {
     int yawCenter = 0;
     int yawSwing  = 0;
 
-    // Mechanical yaw trim, in tenth-degrees. Commanding yaw 0 does not
-    // necessarily point the head straight ahead: the servo horn's mounting
-    // position sets where zero physically lands, and on this unit the head
-    // rests slightly toward the robot's right shoulder. This offset is added
-    // to the neutral pose to correct that. ~10 units per degree.
+    // Mechanical yaw trim, in tenth-degrees. Commanding yaw 0 does not point
+    // this unit's head straight ahead: the servo horn's mounting position sets
+    // where zero physically lands, and at 0 the head sits slightly toward the
+    // robot's right shoulder.
     //
-    // SIGN IS UNVERIFIED on this hardware -- the firmware carries per-feature
-    // sign constants elsewhere for exactly this reason. If a negative value
-    // makes it worse rather than better, flip to positive.
-    int yawNeutralOffset = -200;  // sign probe: ~20 degrees, deliberately obvious
+    // VERIFIED ON HARDWARE 2026-09-27, by driving yaw directly from the
+    // dashboard and watching the robot: +40 (4 degrees) is physically centred,
+    // so at a commanded 0 the head sits a little toward its LEFT.
+    //
+    // The same session settled the sign convention, which is documented
+    // nowhere else in this firmware:
+    //
+    //     NEGATIVE yaw -> robot's LEFT shoulder
+    //     POSITIVE yaw -> robot's RIGHT shoulder
+    //
+    // (The remote's joystick mapping at joystick_handle.c:174 spans +-1280 but
+    // never says which end is which, which is why this had to be measured.)
+    int yawNeutralOffset = 40;
 
     // The resting pose is pitchCenter with yaw centred: the head parks there
     // when the app opens and returns there when the music stops, so a nod
