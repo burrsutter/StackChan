@@ -5,6 +5,7 @@
  */
 #pragma once
 #include "view/video_window.hpp"
+#include <stackchan/stackchan.h>
 #include <mooncake.h>
 #include <cstdint>
 #include <memory>
@@ -38,6 +39,10 @@ private:
     int _ws_call_view_id = -1;
 
     uint32_t _last_motion_cmd_tick = 0;
+
+    // Ambient idle look-around. Paused whenever the server is driving the
+    // head, so remote control and idle motion never fight over the servos.
+    stackchan::IdleMotionModifier* _idle_motion = nullptr;
 
     std::unique_ptr<view::VideoWindow> _video_window;
 

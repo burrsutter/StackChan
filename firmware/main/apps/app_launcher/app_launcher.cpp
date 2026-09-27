@@ -92,10 +92,14 @@ bool AppLauncher::try_autostart_default_app()
         return false;
     }
 
-    // The app a cold boot lands in. DANCE listens to the room: it looks
-    // around inquisitively when it hears voices and nods along once music is
-    // playing, so it covers what COMPANION did and adds to it.
-    constexpr const char* kDefaultAppName = "DANCE";
+    // The app a cold boot lands in. AVATAR connects to the self-hosted server
+    // (CONFIG_STACKCHAN_SERVER_URL) and accepts head, face and LED control
+    // plus camera streaming, so the robot is reachable from the network the
+    // moment it powers up rather than needing someone to walk over and
+    // navigate the launcher. It now carries the same ambient stack DANCE has
+    // -- breath, blink, idle expression and a calm idle look-around -- so it
+    // no longer sits with a dead stare while waiting for commands.
+    constexpr const char* kDefaultAppName = "AVATAR";
 
     for (const auto& props : getAppProps()) {
         if (props.info.name == kDefaultAppName) {

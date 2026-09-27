@@ -89,6 +89,35 @@ void AppAvatar::onOpen()
     avatar->getPanel()->onClick().connect([&]() { _screen_clicked_flag = true; });
     GetStackChan().attachAvatar(std::move(avatar));
 
+    // Ambient liveliness. This app installed no modifiers at all -- its face
+    // only ever changed when the server sent a ControlAvatar frame -- so
+    // between commands the robot sat with a fixed stare and looked switched
+    // off. Remote control still overrides all of this.
+    //
+    // Breath, blink and idle expression are avatar-only: they move the face on
+    // screen and never touch the servos, so they are free on a rail this unit
+    // has been struggling with. Idle motion does drive the head, so it gets
+    // the same deliberately modest profile DANCE uses -- small offsets near
+    // the neutral pitch, slow, no wide look-arounds and no quick glances.
+    {
+        auto& stackchan = GetStackChan();
+        stackchan.addModifier(std::make_unique<stackchan::BreathModifier>());
+        stackchan.addModifier(std::make_unique<stackchan::BlinkModifier>());
+        stackchan.addModifier(std::make_unique<stackchan::IdleExpressionModifier>());
+
+        stackchan::IdleMotionLimits_t calm;
+        calm.yawMax         = 250;
+        calm.pitchMin       = 260;
+        calm.pitchMax       = 400;
+        calm.speedMin       = 100;
+        calm.speedMax       = 200;
+        calm.smallMovesOnly = true;
+
+        auto idle_motion = std::make_unique<stackchan::IdleMotionModifier>(4000, 8000, calm);
+        _idle_motion     = idle_motion.get();
+        stackchan.addModifier(std::move(idle_motion));
+    }
+
     /* ------------------------------- BLE events ------------------------------- */
     GetHAL().onBleAvatarData.connect([&](const char* data) {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -113,11 +142,25 @@ void AppAvatar::onOpen()
     GetHAL().onWsAvatarData.connect([&](std::string_view data) {
         LvglLockGuard lvgl_lock;
         GetStackChan().updateAvatarFromJson(data.data());
+
+        // The protocol has no LED message, and adding one would mean changing
+        // both ends. It does not need one: the RGB keys (leftRgbColor,
+        // leftRgbDuration, right...) are disjoint from the avatar keys
+        // (leftEye, rightEye, mouth), and both parsers ignore what they do not
+        // recognise. So a single ControlAvatar frame can carry face fields,
+        // LED fields, or both, and older clients are unaffected.
+        GetStackChan().updateNeonLightFromJson(data.data());
     });
 
     // Motion control
     GetHAL().onWsMotionData.connect([&](std::string_view data) {
         LvglLockGuard lvgl_lock;
+        // Stand the idle motion down while the server is driving, or the two
+        // fight over the head and the remote control feels possessed.
+        // onRunning() brings it back once the commands stop.
+        if (_idle_motion) {
+            _idle_motion->pause();
+        }
         check_auto_angle_sync_mode();
         GetStackChan().updateMotionFromJson(data.data());
     });
@@ -244,6 +287,13 @@ void AppAvatar::onRunning()
         GetStackChan().updateMotionFromJson(_ble_motion_data.data_ptr);
         _ble_motion_data.update_flag = false;
         _ble_motion_data.data_ptr    = nullptr;
+    }
+
+    // Hand the head back to idle motion once the server has been quiet for a
+    // few seconds. resume() is cheap and idempotent, so calling it per frame
+    // is fine.
+    if (_idle_motion && GetHAL().millis() - _last_motion_cmd_tick > 3000) {
+        _idle_motion->resume();
     }
 
     if (_screen_clicked_flag) {
