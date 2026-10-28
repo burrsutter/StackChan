@@ -154,6 +154,11 @@ struct BeatDetectParams_t {
     // from chattering in and out and stuttering the nod.
     float musicStopHysteresis = 0.7f;
 
+    // ...and it has to stay down there this long before the music counts as
+    // stopped. Measured 2026-10-28: a 150-190 bpm track flickered stopped and
+    // detected again every 2-5 s through its quieter passages without this.
+    uint32_t musicStopGraceMs = 4000;
+
     // Require the energy to be RISING to call a beat, so the attack of a kick
     // triggers once instead of the whole sustained note re-triggering.
     bool requireRisingEnergy = true;

@@ -127,6 +127,7 @@ void BeatDetector::run()
     uint32_t bpm_beat_count   = 0;
     uint32_t quiet_log_tick   = GetHAL().millis();
     uint32_t above_floor_since = 0;
+    uint32_t below_stop_since  = 0;
 
     while (!_stop_requested) {
         if (!GetHAL().micCaptureRead(samples, WINDOW_FRAMES)) {
@@ -181,13 +182,23 @@ void BeatDetector::run()
             const float stop_level = kBeatDetect.noiseFloor * kBeatDetect.musicStopHysteresis;
 
             // Entering music mode needs the level held above the floor for
-            // musicOnsetHoldMs; leaving it only needs a drop below the
-            // hysteresis level. Without the hold, a burst of speech or a
+            // musicOnsetHoldMs. Without the hold, a burst of speech or a
             // handful of keystrokes tips the average over the line for a
-            // second and the head starts nodding at nothing.
+            // second and the head starts nodding at nothing. Leaving it needs
+            // the level held below the hysteresis level for musicStopGraceMs:
+            // a quiet passage inside a song dips the bass for a second or two,
+            // and stopping on the first dip made the whole show -- LEDs, face,
+            // head -- stutter in and out every few seconds.
             bool playing = was_playing;
             if (was_playing) {
-                playing = average > stop_level;
+                if (average > stop_level) {
+                    below_stop_since = 0;
+                } else {
+                    if (below_stop_since == 0) {
+                        below_stop_since = now;
+                    }
+                    playing = now - below_stop_since < kBeatDetect.musicStopGraceMs;
+                }
             } else if (average > kBeatDetect.noiseFloor) {
                 if (above_floor_since == 0) {
                     above_floor_since = now;
@@ -198,6 +209,8 @@ void BeatDetector::run()
             }
             if (playing) {
                 above_floor_since = 0;
+            } else {
+                below_stop_since = 0;
             }
 
             const bool loud_enough   = energy > threshold;
