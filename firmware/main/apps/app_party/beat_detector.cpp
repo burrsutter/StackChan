@@ -11,6 +11,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -129,6 +130,56 @@ void BeatDetector::run()
     uint32_t above_floor_since = 0;
     uint32_t below_stop_since  = 0;
 
+    // Recent bass hits, for the rhythm check. Recorded whether or not music
+    // mode is on, since starting it now depends on them.
+    std::array<uint32_t, 24> onsets{};
+    size_t onset_count = 0;
+    size_t onset_pos   = 0;
+    float rhythm       = 0.0f;
+    int rhythm_gaps    = 0;
+    uint32_t rhythm_period_ms = 0;
+
+    auto score_rhythm = [&](uint32_t now) {
+        // Gaps between consecutive hits inside the window, oldest first.
+        std::array<uint32_t, 24> times{};
+        size_t n = 0;
+        for (size_t i = 0; i < onset_count; i++) {
+            const uint32_t t = onsets[(onset_pos + onsets.size() - onset_count + i) % onsets.size()];
+            if (now - t <= kBeatDetect.rhythmWindowMs) {
+                times[n++] = t;
+            }
+        }
+        std::array<uint32_t, 24> gaps{};
+        size_t g = 0;
+        for (size_t i = 1; i < n; i++) {
+            gaps[g++] = times[i] - times[i - 1];
+        }
+        rhythm_gaps = static_cast<int>(g);
+        if (static_cast<int>(g) < kBeatDetect.rhythmMinGaps) {
+            rhythm_period_ms = 0;
+            return 0.0f;
+        }
+
+        // Typical gap = the period. Median, so a few stray hits do not drag it.
+        std::array<uint32_t, 24> sorted = gaps;
+        std::sort(sorted.begin(), sorted.begin() + g);
+        const uint32_t period = sorted[g / 2];
+        rhythm_period_ms      = period;
+        if (period < kBeatDetect.rhythmMinPeriodMs) {
+            return 0.0f;
+        }
+
+        int on_grid = 0;
+        for (size_t i = 0; i < g; i++) {
+            const float ratio   = static_cast<float>(gaps[i]) / static_cast<float>(period);
+            const float nearest = std::clamp(std::round(ratio), 1.0f, 2.0f);
+            if (std::fabs(ratio - nearest) <= kBeatDetect.rhythmTolerance) {
+                on_grid++;
+            }
+        }
+        return static_cast<float>(on_grid) / static_cast<float>(g);
+    };
+
     while (!_stop_requested) {
         if (!GetHAL().micCaptureRead(samples, WINDOW_FRAMES)) {
             // Either capture was torn down under us or the codec errored;
@@ -189,9 +240,23 @@ void BeatDetector::run()
             // a quiet passage inside a song dips the bass for a second or two,
             // and stopping on the first dip made the whole show -- LEDs, face,
             // head -- stutter in and out every few seconds.
+            // Bass hits are collected first, so the rhythm score is current.
+            const bool loud_enough   = energy > threshold;
+            const bool past_cooldown = now - last_beat_tick >= kBeatDetect.minBeatIntervalMs;
+            const bool rising        = !kBeatDetect.requireRisingEnergy || energy > prev_energy;
+            const bool hit           = loud_enough && past_cooldown && rising && average > stop_level;
+            if (hit) {
+                last_beat_tick     = now;
+                onsets[onset_pos]  = now;
+                onset_pos          = (onset_pos + 1) % onsets.size();
+                onset_count        = std::min(onset_count + 1, onsets.size());
+            }
+            rhythm = score_rhythm(now);
+
+            // Music = loud enough AND steady. Level alone let loud speech in.
             bool playing = was_playing;
             if (was_playing) {
-                if (average > stop_level) {
+                if (average > stop_level && rhythm >= kBeatDetect.rhythmStop) {
                     below_stop_since = 0;
                 } else {
                     if (below_stop_since == 0) {
@@ -199,7 +264,7 @@ void BeatDetector::run()
                     }
                     playing = now - below_stop_since < kBeatDetect.musicStopGraceMs;
                 }
-            } else if (average > kBeatDetect.noiseFloor) {
+            } else if (average > kBeatDetect.noiseFloor && rhythm >= kBeatDetect.rhythmOnset) {
                 if (above_floor_since == 0) {
                     above_floor_since = now;
                 }
@@ -213,12 +278,7 @@ void BeatDetector::run()
                 below_stop_since = 0;
             }
 
-            const bool loud_enough   = energy > threshold;
-            const bool past_cooldown = now - last_beat_tick >= kBeatDetect.minBeatIntervalMs;
-            const bool rising        = !kBeatDetect.requireRisingEnergy || energy > prev_energy;
-
-            if (playing && loud_enough && past_cooldown && rising) {
-                last_beat_tick = now;
+            if (playing && hit) {
                 bpm_beat_count++;
 
                 // 0 at the threshold, 1 at twice the threshold or louder.
@@ -235,23 +295,24 @@ void BeatDetector::run()
             _music_playing = playing;
 
             if (playing != was_playing) {
-                mclog::tagInfo(_tag, "music {}", playing ? "detected" : "stopped");
+                mclog::tagInfo(_tag, "music {} (rhythm {:.2f} over {} gaps, period {} ms)",
+                               playing ? "detected" : "stopped", rhythm, rhythm_gaps, rhythm_period_ms);
                 was_playing      = playing;
                 bpm_window_start = now;
                 bpm_beat_count   = 0;
             }
 
             if (!playing && now - quiet_log_tick >= QUIET_LOG_INTERVAL_MS) {
-                mclog::tagInfo(_tag, "quiet, energy {:.0f} (noise floor {:.0f})", average,
-                               kBeatDetect.noiseFloor);
+                mclog::tagInfo(_tag, "quiet, energy {:.0f} (noise floor {:.0f}), rhythm {:.2f} over {} gaps, period {} ms",
+                               average, kBeatDetect.noiseFloor, rhythm, rhythm_gaps, rhythm_period_ms);
                 quiet_log_tick = now;
             }
 
             if (playing && now - bpm_window_start >= BPM_LOG_INTERVAL_MS) {
                 const float minutes = static_cast<float>(now - bpm_window_start) / 60000.0f;
                 const int bpm       = minutes > 0.0f ? static_cast<int>(bpm_beat_count / minutes) : 0;
-                mclog::tagInfo(_tag, "{} beats in {} ms (~{} bpm), avg energy {:.0f}", bpm_beat_count,
-                               now - bpm_window_start, bpm, average);
+                mclog::tagInfo(_tag, "{} beats in {} ms (~{} bpm), avg energy {:.0f}, rhythm {:.2f}, period {} ms",
+                               bpm_beat_count, now - bpm_window_start, bpm, average, rhythm, rhythm_period_ms);
                 bpm_window_start = now;
                 bpm_beat_count   = 0;
             }

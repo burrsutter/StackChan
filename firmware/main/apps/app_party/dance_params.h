@@ -139,6 +139,10 @@ struct BeatDetectParams_t {
     // detector logs "quiet, energy N" every 5 s whenever it is not hearing
     // music. Set this comfortably above that N, and below the sparse-passage
     // figure in the BPM lines.
+    // Briefly raised to 100000 on 2026-10-28 to reject a speech-only YouTube
+    // video (bass average ~47k, bursts to 136k), which did not work: loud
+    // speech overlaps quiet music in level. Rhythm now does that job (see
+    // rhythm* below), so the floor is back where quiet music still clears it.
     float noiseFloor = 50000.0f;
 
     // Level alone cannot separate a voice from a track: measured in this room
@@ -147,7 +151,10 @@ struct BeatDetectParams_t {
     // on. The bands nearly touch, so time is the better discriminator --
     // speech and keystrokes are bursty, music is continuous. The level has to
     // stay above the floor for this long before the head starts nodding.
-    uint32_t musicOnsetHoldMs = 1200;
+    // Since 2026-10-28 the rhythm score (below) must hold too, for the whole
+    // of this. Raised 1200 -> 3000: speech scored 0.70-0.75 for a moment at
+    // a time, music should stay steady.
+    uint32_t musicOnsetHoldMs = 3000;
 
     // Once music is detected, it has to fall to this fraction of the floor
     // before counting as stopped. Stops a level hovering near the threshold
@@ -158,6 +165,23 @@ struct BeatDetectParams_t {
     // stopped. Measured 2026-10-28: a 150-190 bpm track flickered stopped and
     // detected again every 2-5 s through its quieter passages without this.
     uint32_t musicStopGraceMs = 4000;
+
+    // Rhythm: level cannot tell loud speech from quiet music, but steadiness
+    // can. Music's bass hits land on a grid; speech's land anywhere. Over the
+    // last rhythmWindowMs of hits, the typical gap is taken as the period and
+    // the score is the share of gaps within rhythmTolerance of one or two
+    // periods (two, so a skipped beat still counts). PROVISIONAL: logged as
+    // "rhythm" on the quiet and bpm lines, to be tuned from real songs.
+    uint32_t rhythmWindowMs    = 6000;
+    int rhythmMinGaps          = 6;      // fewer than this scores 0
+    float rhythmTolerance      = 0.15f;  // fraction of a period
+    float rhythmOnset          = 0.75f;  // score needed, held for musicOnsetHoldMs
+    float rhythmStop           = 0.45f;  // below this (for the grace) stops
+    // A "period" shorter than this is syllables, not a beat: speech runs at
+    // 4-5 syllables a second, which the 250 ms beat cooldown would otherwise
+    // flatten into a suspiciously steady grid. Measured on a speech video:
+    // its brief false highs had periods of 280-290 ms. 300 ms = 200 bpm.
+    uint32_t rhythmMinPeriodMs = 300;
 
     // Require the energy to be RISING to call a beat, so the attack of a kick
     // triggers once instead of the whole sustained note re-triggering.
