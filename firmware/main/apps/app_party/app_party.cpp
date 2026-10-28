@@ -117,6 +117,12 @@ void AppParty::onOpen()
     avatar->getPanel()->onClick().connect([&]() { _screen_clicked_flag = true; });
     GetStackChan().attachAvatar(std::move(avatar));
 
+    // LEDs dark until music plays. The PY32 expander keeps its LED state
+    // across an ESP reboot, so whatever the last app or a crash left lit
+    // would otherwise still be showing.
+    GetHAL().showRgbColor(0, 0, 0);
+    _leds_lit = false;
+
     /* ------------------------------ Head posture ----------------------------- */
     {
         auto& stackchan = GetStackChan();
@@ -158,8 +164,10 @@ void AppParty::onOpen()
         // the two parsers ignore each other's keys.
         GetStackChan().updateNeonLightFromJson(data.data());
         if (carries_led_fields(data)) {
+            // Shown for kServerLedHoldMs, then switched off again unless
+            // music is playing: in PARTY the LEDs are dark by default.
             _last_remote_led_tick = GetHAL().millis();
-            _leds_lit             = false;  // hand the LEDs over without a final beat write
+            _leds_lit             = true;
         }
         note_engagement();
     });
@@ -380,8 +388,9 @@ void AppParty::update_head_leds(bool music_playing)
         return;
     }
 
-    // Dark whenever the room is quiet -- written once on the transition so a
-    // silent room costs no I2C traffic.
+    // Dark whenever the room is quiet, including after a server colour's hold
+    // runs out -- written once on the transition so a silent room costs no
+    // I2C traffic.
     if (!music_playing) {
         if (_leds_lit) {
             _leds_lit = false;
