@@ -100,8 +100,10 @@ struct DanceMoveParams_t {
 
     /* -------------------------- Beat responsiveness ------------------------ */
     // Scale the dip with how hard the beat hit. 0.0 = every beat dips fully;
-    // 1.0 = a beat only just over the threshold barely moves.
-    float beatStrengthInfluence = 0.40f;
+    // 1.0 = a beat only just over the threshold barely moves. Raised from 0.40
+    // so he grooves -- big on strong beats, a bob on weak ones -- instead of
+    // headbanging at full depth on every hit.
+    float beatStrengthInfluence = 0.65f;
 };
 
 /*
@@ -188,9 +190,59 @@ struct DanceLedParams_t {
     uint32_t fadeMs = 220;
 };
 
+/*
+ * Party hard without injury: the face and LEDs carry the energy (they do not
+ * wear), and the servos pace themselves and back off before damage.
+ */
+struct PartyShowParams_t {
+    /* --------------------------- Face on the beat --------------------------- */
+    // Happy eyes while music plays; the mouth pops open on each beat and
+    // closes with the chin. Screen only -- no servo cost.
+    int beatMouthOpen = 70;  // speaking uses 40-80
+    int beatMouthRest = 0;
+
+    /* ------------------------------ LED show -------------------------------- */
+    // Alternate which bar flashes on each beat (right 0-5, left 6-11); the
+    // other bar holds the glow. A beat at least this strong flashes both bars
+    // at once, in complementary colours.
+    float strongBeat = 0.75f;
+};
+
+struct PartySafetyParams_t {
+    /* ------------------------------- Stamina -------------------------------- */
+    // After this long dancing without a real break, rest: the face and LEDs
+    // keep going, the head only bobs. A quiet gap this long resets the stint.
+    uint32_t stintMs        = 5 * 60 * 1000;
+    uint32_t staminaRestMs  = 30 * 1000;
+    float staminaRestScale  = 0.30f;
+    uint32_t stintResetGapMs = 20 * 1000;
+
+    /* ---------------------------- Servo health ------------------------------ */
+    // Each servo's status block is read this often (one bus transaction per
+    // servo) and logged, so thresholds can be set from real numbers.
+    uint32_t telemetryIntervalMs = 5000;
+
+    // PROVISIONAL -- set before any long dance had been measured. Re-tune from
+    // the "[PartySafety]" log lines once a few songs' worth exist.
+    int warmC         = 50;    // nods shrink above this
+    float warmScale   = 0.60f;
+    int hotC          = 60;    // nodding stops above this...
+    int cooledC       = 48;    // ...until every servo is back under this
+    uint32_t minHeatRestMs = 30 * 1000;
+
+    // Strain: high load on a head that is supposed to be still means it is
+    // blocked or pushing against something. Readings are only taken while the
+    // head is not animating, so an ordinary nod never counts.
+    int strainLoad          = 650;  // out of 1000
+    int strainSamples       = 2;    // consecutive polls before acting
+    uint32_t strainRestMs   = 30 * 1000;
+};
+
 // The live values used by the PARTY app. Edit the struct defaults above.
 inline constexpr DanceMoveParams_t kDanceMoves{};
 inline constexpr BeatDetectParams_t kBeatDetect{};
 inline constexpr DanceLedParams_t kDanceLeds{};
+inline constexpr PartyShowParams_t kPartyShow{};
+inline constexpr PartySafetyParams_t kPartySafety{};
 
 }  // namespace dance

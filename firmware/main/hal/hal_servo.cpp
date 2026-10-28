@@ -540,3 +540,18 @@ void Hal::servo_init()
 
     GetStackChan().attachMotion(std::move(motion));
 }
+
+bool Hal::readServoTelemetry(int id, ServoTelemetry_t& out)
+{
+    // FeedBack() reads the whole status block (position through current) in
+    // one transaction; the Read*(-1) calls below only decode that buffer.
+    if (_scs_bus.FeedBack(id) < 0) {
+        return false;
+    }
+    out.position     = _scs_bus.ReadPos(-1);
+    out.load         = _scs_bus.ReadLoad(-1);
+    out.voltageDeciV = _scs_bus.ReadVoltage(-1);
+    out.temperatureC = _scs_bus.ReadTemper(-1);
+    out.current      = _scs_bus.ReadCurrent(-1);
+    return true;
+}

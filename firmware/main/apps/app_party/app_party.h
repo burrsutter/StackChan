@@ -73,8 +73,29 @@ private:
     uint32_t _led_flash_tick  = 0;
     uint32_t _led_update_tick = 0;
     bool _leds_lit            = false;
+    bool _flash_left_bar      = false;  // which bar leads this beat
+    bool _flash_both_bars     = false;  // strong beat: both bars, two colours
+
+    // Face: happy eyes while music plays, mouth open on the beat.
+    bool _party_face = false;
+    bool _mouth_open = false;
+
+    // Party hard without injury -- see PartySafetyParams_t.
+    enum class Rest { None, Stamina, Heat, Strain };
+    Rest _rest                    = Rest::None;
+    uint32_t _rest_since_tick     = 0;
+    uint32_t _stint_start_tick    = 0;  // 0 = not dancing
+    uint32_t _last_music_tick     = 0;
+    uint32_t _last_telemetry_tick = 0;
+    int _servo_temp_c[2]          = {-1, -1};  // yaw, pitch
+    int _strain_count[2]          = {0, 0};
 
     bool server_owns_head();
+    void update_servo_health();
+    void update_stamina(bool music_playing);
+    void begin_rest(Rest reason);
+    float nod_scale() const;
+    void set_party_face(bool on);
     bool server_dance_playing();
     void update_head_leds(bool music_playing);
     void park_at_neutral();

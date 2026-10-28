@@ -23,6 +23,19 @@
 enum class HeadPetGesture { None, Press, Release, SwipeForward, SwipeBackward };
 
 /**
+ * @brief One servo's status block, read in a single bus transaction.
+ * Units are the servo's own: temperature in degrees C, voltage in 0.1 V,
+ * load signed out of 1000 (the sign is direction), current raw.
+ */
+struct ServoTelemetry_t {
+    int temperatureC = -1;
+    int voltageDeciV = -1;
+    int load         = 0;
+    int current      = -1;
+    int position     = -1;
+};
+
+/**
  * @brief
  *
  */
@@ -247,6 +260,12 @@ public:
     void setRgbColor(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
     void showRgbColor(uint8_t r, uint8_t g, uint8_t b);
     void refreshRgb();
+
+    /* ---------------------------------- Servo --------------------------------- */
+    // Reads one servo's status block (id 1 = yaw, 2 = pitch). Shares the
+    // half-duplex servo bus with motion, so call it from the main loop only,
+    // and sparingly. Returns false if the servo did not answer cleanly.
+    bool readServoTelemetry(int id, ServoTelemetry_t& out);
 
     /* ---------------------------------- Power --------------------------------- */
     void setServoPowerEnabled(bool enabled);

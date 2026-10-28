@@ -314,6 +314,7 @@ void AppParty::onRunning()
         _dance_modifier_ptr = nullptr;
     }
 
+    update_servo_health();
     update_music_dance();
 
     GetStackChan().update();
@@ -410,21 +411,36 @@ void AppParty::update_head_leds(bool music_playing)
     // chin takes to come up, so the light tracks the nod.
     const float fade_ms  = static_cast<float>(kDanceLeds.fadeMs);
     const uint32_t since = now - _led_flash_tick;
-    float level          = kDanceLeds.glowLevel;
+    float flash          = kDanceLeds.glowLevel;
     if (_led_flash_tick != 0 && since < kDanceLeds.fadeMs) {
         const float fade = 1.0f - (static_cast<float>(since) / fade_ms);
-        level            = kDanceLeds.glowLevel + (1.0f - kDanceLeds.glowLevel) * fade;
+        flash            = kDanceLeds.glowLevel + (1.0f - kDanceLeds.glowLevel) * fade;
     }
 
-    uint8_t r = kDanceLeds.fixedR;
-    uint8_t g = kDanceLeds.fixedG;
-    uint8_t b = kDanceLeds.fixedB;
+    uint8_t r = kDanceLeds.fixedR, g = kDanceLeds.fixedG, b = kDanceLeds.fixedB;
+    uint8_t r2 = r, g2 = g, b2 = b;
     if (kDanceLeds.randomHue && _led_hue >= 0) {
         hue_to_rgb(_led_hue, r, g, b);
+        hue_to_rgb(_led_hue + 180, r2, g2, b2);
     }
 
-    GetHAL().showRgbColor(static_cast<uint8_t>(r * level), static_cast<uint8_t>(g * level),
-                          static_cast<uint8_t>(b * level));
+    // Right bar is LEDs 0-5, left bar 6-11. A normal beat flashes one bar,
+    // alternating, while the other holds the glow; a strong beat flashes both
+    // in complementary colours.
+    const float right_level = (_flash_both_bars || !_flash_left_bar) ? flash : kDanceLeds.glowLevel;
+    const float left_level  = (_flash_both_bars || _flash_left_bar) ? flash : kDanceLeds.glowLevel;
+    const bool two_colours  = _flash_both_bars;
+
+    for (uint8_t i = 0; i < 12; i++) {
+        const bool left   = i >= 6;
+        const float level = left ? left_level : right_level;
+        const uint8_t cr  = (left && two_colours) ? r2 : r;
+        const uint8_t cg  = (left && two_colours) ? g2 : g;
+        const uint8_t cb  = (left && two_colours) ? b2 : b;
+        GetHAL().setRgbColor(i, static_cast<uint8_t>(cr * level), static_cast<uint8_t>(cg * level),
+                             static_cast<uint8_t>(cb * level));
+    }
+    GetHAL().refreshRgb();
 }
 
 void AppParty::park_at_neutral()
@@ -477,9 +493,33 @@ void AppParty::check_auto_angle_sync_mode()
     _last_motion_cmd_tick = GetHAL().millis();
 }
 
+void AppParty::set_party_face(bool on)
+{
+    if (on == _party_face) {
+        return;
+    }
+    _party_face  = on;
+    auto& avatar = GetStackChan().avatar();
+    avatar.setEmotion(on ? avatar::Emotion::Happy : avatar::Emotion::Neutral);
+    avatar.mouth().setWeight(dance::kPartyShow.beatMouthRest);
+    _mouth_open = false;
+}
+
 void AppParty::update_music_dance()
 {
     using namespace dance;
+
+    const bool music   = _beat_detector.isMusicPlaying();
+    const uint32_t now = GetHAL().millis();
+
+    update_stamina(music);
+    set_party_face(music);
+
+    // Close the mouth with the chin, whether or not the head nodded.
+    if (_mouth_open && now - _last_beat_tick >= kDanceMoves.nodHoldMs) {
+        GetStackChan().avatar().mouth().setWeight(kPartyShow.beatMouthRest);
+        _mouth_open = false;
+    }
 
     // The server owns the head outright while it is driving or a dance
     // sequence is playing. Music and idle drift pick up again afterwards,
@@ -490,11 +530,11 @@ void AppParty::update_music_dance()
         }
         _nod_down   = false;
         _at_neutral = false;
-        update_head_leds(_beat_detector.isMusicPlaying());
+        update_head_leds(music);
         return;
     }
 
-    if (!_beat_detector.isMusicPlaying()) {
+    if (!music) {
         // Finish any dip still in progress, then drift.
         if (_nod_down) {
             lift_chin();
@@ -515,8 +555,11 @@ void AppParty::update_music_dance()
         _idle_motion->pause();
     }
 
-    // Square up before dancing, so every nod starts from the same pose.
-    park_at_neutral();
+    // Square up before dancing, so every nod starts from the same pose -- but
+    // not while resting for heat or strain, when the servos should stay still.
+    if (nod_scale() > 0.0f) {
+        park_at_neutral();
+    }
 
     update_head_leds(true);
 
@@ -527,7 +570,7 @@ void AppParty::update_music_dance()
     }
 
     // Second half of the nod, issued from the loop rather than blocking.
-    if (_nod_down && GetHAL().millis() - _last_beat_tick >= kDanceMoves.nodHoldMs) {
+    if (_nod_down && now - _last_beat_tick >= kDanceMoves.nodHoldMs) {
         lift_chin();
     }
 }
@@ -536,6 +579,32 @@ void AppParty::move_to_beat(float strength)
 {
     using namespace dance;
 
+    _last_beat_tick = GetHAL().millis();
+
+    // LEDs: kick the flash, alternate the lead bar, and light both bars in two
+    // colours on a strong beat. update_head_leds() fades them back down.
+    _led_flash_tick  = _last_beat_tick;
+    _flash_left_bar  = !_flash_left_bar;
+    _flash_both_bars = strength >= kPartyShow.strongBeat;
+    if (kDanceLeds.randomHue) {
+        // Step to a hue clearly different from the last one.
+        const int span = 360 - 2 * kDanceLeds.minHueStepDeg;
+        const int step = kDanceLeds.minHueStepDeg + (span > 0 ? Random::getInstance().getInt(0, span) : 0);
+        _led_hue       = (_led_hue < 0 ? Random::getInstance().getInt(0, 359) : (_led_hue + step)) % 360;
+    }
+
+    // Face: the mouth pops open on the beat. Free -- it is only pixels.
+    GetStackChan().avatar().mouth().setWeight(kPartyShow.beatMouthOpen);
+    _mouth_open = true;
+
+    // The nod is the only part that wears anything, so it is the part that
+    // backs off when he is tired, warm or straining.
+    const float safety = nod_scale();
+    if (safety <= 0.0f) {
+        _nod_down = false;
+        return;
+    }
+
     auto& motion = GetStackChan().motion();
 
     // Chain each move from the last commanded pose rather than a fresh servo
@@ -543,17 +612,9 @@ void AppParty::move_to_beat(float strength)
     motion.setAutoAngleSyncEnabled(false);
 
     // Harder beats dip deeper, softer ones barely move.
-    const float scale = (1.0f - kDanceMoves.beatStrengthInfluence) + kDanceMoves.beatStrengthInfluence * strength;
-    const int dip     = static_cast<int>(kDanceMoves.nodDip * scale);
-
-    // Kick the LEDs on the beat; update_head_leds() fades them back down.
-    _led_flash_tick = GetHAL().millis();
-    if (kDanceLeds.randomHue) {
-        // Step to a hue clearly different from the last one.
-        const int span = 360 - 2 * kDanceLeds.minHueStepDeg;
-        const int step = kDanceLeds.minHueStepDeg + (span > 0 ? Random::getInstance().getInt(0, span) : 0);
-        _led_hue       = (_led_hue < 0 ? Random::getInstance().getInt(0, 359) : (_led_hue + step)) % 360;
-    }
+    const float groove = (1.0f - kDanceMoves.beatStrengthInfluence) + kDanceMoves.beatStrengthInfluence * strength;
+    const float scale  = groove * safety;
+    const int dip      = static_cast<int>(kDanceMoves.nodDip * scale);
 
     // Optional slow sway, one step every four beats. Off unless yawSwing is set.
     int yaw = kDanceMoves.yawCenter;
@@ -579,9 +640,7 @@ void AppParty::move_to_beat(float strength)
     _nod_yaw = std::clamp(yaw, kDanceMoves.yawSafeMin, kDanceMoves.yawSafeMax);
     motion.moveWithSpeed(_nod_yaw, std::clamp(pitch, kDanceMoves.pitchSafeMin, kDanceMoves.pitchSafeMax),
                          kDanceMoves.nodDownSpeed);
-
-    _last_beat_tick = GetHAL().millis();
-    _nod_down       = true;
+    _nod_down = true;
 }
 
 void AppParty::lift_chin()
@@ -595,4 +654,142 @@ void AppParty::lift_chin()
                          std::clamp(kDanceMoves.pitchCenter, kDanceMoves.pitchSafeMin, kDanceMoves.pitchSafeMax),
                          kDanceMoves.nodUpSpeed);
     _nod_down = false;
+}
+
+/* --------------------------- Party without injury -------------------------- */
+
+namespace {
+const char* rest_name(int rest)
+{
+    switch (rest) {
+        case 1:  return "stamina";
+        case 2:  return "heat";
+        case 3:  return "strain";
+        default: return "none";
+    }
+}
+}  // namespace
+
+void AppParty::begin_rest(Rest reason)
+{
+    _rest            = reason;
+    _rest_since_tick = GetHAL().millis();
+    mclog::tagWarn("PartySafety", "resting ({}): yaw {}C pitch {}C -- face and LEDs carry on, nods {}",
+                   rest_name(static_cast<int>(reason)), _servo_temp_c[0], _servo_temp_c[1],
+                   reason == Rest::Stamina ? "shrink to a bob" : "stop");
+}
+
+float AppParty::nod_scale() const
+{
+    using namespace dance;
+
+    float scale = 1.0f;
+    switch (_rest) {
+        case Rest::Heat:
+        case Rest::Strain:
+            return 0.0f;
+        case Rest::Stamina:
+            scale = kPartySafety.staminaRestScale;
+            break;
+        case Rest::None:
+            break;
+    }
+
+    const int hottest = std::max(_servo_temp_c[0], _servo_temp_c[1]);
+    if (hottest >= kPartySafety.warmC) {
+        scale = std::min(scale, kPartySafety.warmScale);
+    }
+    return scale;
+}
+
+void AppParty::update_stamina(bool music_playing)
+{
+    using namespace dance;
+
+    const uint32_t now = GetHAL().millis();
+
+    if (music_playing) {
+        _last_music_tick = now;
+        if (_stint_start_tick == 0) {
+            _stint_start_tick = now;
+        }
+    } else if (_stint_start_tick != 0 && now - _last_music_tick >= kPartySafety.stintResetGapMs) {
+        // A real break between songs: the stint starts over.
+        _stint_start_tick = 0;
+    }
+
+    if (_rest == Rest::None && _stint_start_tick != 0 && now - _stint_start_tick >= kPartySafety.stintMs) {
+        begin_rest(Rest::Stamina);
+    }
+
+    if (_rest == Rest::Stamina && now - _rest_since_tick >= kPartySafety.staminaRestMs) {
+        _rest             = Rest::None;
+        _stint_start_tick = music_playing ? now : 0;
+        mclog::tagInfo("PartySafety", "rested, back to full nods");
+    }
+
+    if (_rest == Rest::Strain && now - _rest_since_tick >= kPartySafety.strainRestMs) {
+        _rest = Rest::None;
+        mclog::tagInfo("PartySafety", "strain rest over, nodding again");
+    }
+}
+
+void AppParty::update_servo_health()
+{
+    using namespace dance;
+
+    const uint32_t now = GetHAL().millis();
+    if (_last_telemetry_tick != 0 && now - _last_telemetry_tick < kPartySafety.telemetryIntervalMs) {
+        return;
+    }
+    _last_telemetry_tick = now;
+
+    // Strain only counts on a head that is meant to be still, so read whether
+    // it is animating (bus-free) before touching the bus.
+    const bool still = !GetStackChan().motion().isAnimating();
+
+    ServoTelemetry_t t[2];
+    bool ok[2];
+    for (int i = 0; i < 2; i++) {
+        ok[i] = GetHAL().readServoTelemetry(i + 1, t[i]);
+        if (!ok[i]) {
+            continue;
+        }
+        _servo_temp_c[i] = t[i].temperatureC;
+
+        if (still && std::abs(t[i].load) >= kPartySafety.strainLoad) {
+            _strain_count[i]++;
+        } else {
+            _strain_count[i] = 0;
+        }
+    }
+
+    mclog::tagInfo("PartySafety",
+                   "yaw {} | pitch {} | still={} rest={} nod_scale={:.2f}",
+                   ok[0] ? fmt::format("{}C {}.{}V load={} cur={}", t[0].temperatureC, t[0].voltageDeciV / 10,
+                                       t[0].voltageDeciV % 10, t[0].load, t[0].current)
+                         : std::string("no reply"),
+                   ok[1] ? fmt::format("{}C {}.{}V load={} cur={}", t[1].temperatureC, t[1].voltageDeciV / 10,
+                                       t[1].voltageDeciV % 10, t[1].load, t[1].current)
+                         : std::string("no reply"),
+                   still, rest_name(static_cast<int>(_rest)), nod_scale());
+
+    if (_rest != Rest::Heat && _rest != Rest::Strain &&
+        std::max(_strain_count[0], _strain_count[1]) >= kPartySafety.strainSamples) {
+        _strain_count[0] = _strain_count[1] = 0;
+        begin_rest(Rest::Strain);
+        return;
+    }
+
+    const int hottest = std::max(_servo_temp_c[0], _servo_temp_c[1]);
+    if (_rest != Rest::Heat && hottest >= kPartySafety.hotC) {
+        begin_rest(Rest::Heat);
+        return;
+    }
+
+    if (_rest == Rest::Heat && now - _rest_since_tick >= kPartySafety.minHeatRestMs && _servo_temp_c[0] >= 0 &&
+        _servo_temp_c[1] >= 0 && hottest < kPartySafety.cooledC) {
+        _rest = Rest::None;
+        mclog::tagInfo("PartySafety", "cooled to {}C, nodding again", hottest);
+    }
 }
