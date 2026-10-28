@@ -162,10 +162,7 @@ struct BeatDetectParams_t {
 };
 
 /*
- * Head LEDs while music is playing.
- *
- * Only indices 0-5 light on this unit -- the bar on stage right. 6-11 are
- * wired but dead, so the flash is one-sided by nature of the hardware.
+ * Head LEDs while music is playing. All 12 are driven, both bars together.
  */
 struct DanceLedParams_t {
     // A fresh random hue on every beat, rather than one fixed colour. Set
@@ -191,7 +188,7 @@ struct DanceLedParams_t {
     uint32_t fadeMs = 220;
 };
 
-// The live values used by the DANCE app. Edit the struct defaults above.
+// The live values used by the PARTY app. Edit the struct defaults above.
 inline constexpr DanceMoveParams_t kDanceMoves{};
 inline constexpr BeatDetectParams_t kBeatDetect{};
 inline constexpr DanceLedParams_t kDanceLeds{};

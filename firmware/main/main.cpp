@@ -41,6 +41,8 @@ extern "C" void app_main(void)
         GetMooncake().installApp(std::make_unique<AppSetup>());
         // Installed last so existing warm-reboot icon indices stay valid
         GetMooncake().installApp(std::make_unique<AppCompanion>());
+        // Also last for the same reason; its warm-reboot index is 8
+        GetMooncake().installApp(std::make_unique<AppParty>());
 
         // Main loop
         while (1) {

@@ -13,3 +13,4 @@
 #include "app_ezdata/app_ezdata.h"
 #include "app_dance/app_dance.h"
 #include "app_companion/app_companion.h"
+#include "app_party/app_party.h"

@@ -95,14 +95,12 @@ bool AppLauncher::try_autostart_default_app()
         return false;
     }
 
-    // The app a cold boot lands in. AVATAR connects to the self-hosted server
-    // (CONFIG_STACKCHAN_SERVER_URL) and accepts head, face and LED control
-    // plus camera streaming, so the robot is reachable from the network the
-    // moment it powers up rather than needing someone to walk over and
-    // navigate the launcher. It now carries the same ambient stack DANCE has
-    // -- breath, blink, idle expression and a calm idle look-around -- so it
-    // no longer sits with a dead stare while waiting for commands.
-    constexpr const char* kDefaultAppName = "AVATAR";
+    // The app a cold boot lands in. PARTY connects to the self-hosted server
+    // (CONFIG_STACKCHAN_SERVER_URL) for head, face, LED and camera control,
+    // and between commands reacts to music in the room, so the robot is both
+    // reachable from the network and lively the moment it powers up. The
+    // stock AVATAR and DANCE apps stay as M5Stack ships them.
+    constexpr const char* kDefaultAppName = "PARTY";
 
     for (const auto& props : getAppProps()) {
         if (props.info.name == kDefaultAppName) {
