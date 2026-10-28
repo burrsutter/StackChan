@@ -17,8 +17,10 @@
 #include <esp_lcd_ili9341.h>
 #include <esp_timer.h>
 #include <algorithm>
+#include <mutex>
 #include "stackchan_camera.h"
 #include "hal_bridge.h"
+#include <hal/hal.h>
 
 #define TAG "M5Stack-StackChan-Board"
 
@@ -177,37 +179,62 @@ public:
         return true;
     }
 
-    // AXP2101 PMU_STATUS1 bit 5 -- VBUS present and within spec. This is the
-    // only direct statement the PMIC makes about a cable being plugged in;
-    // everything else is inferred from which way current happens to be
-    // flowing right now.
-    bool IsVbusGood()
+    esp_err_t TryReadPowerStatus(bool& has_external_power, bool& charging, bool& discharging)
     {
-        const int power_status = ReadReg(0x00);
-        if (power_status == -1) {
-            return false;
+        // AXP2101 PMU_STATUS1 bit 5 -- VBUS present and within spec. This is the
+        // only direct statement the PMIC makes about a cable being plugged in;
+        // everything else is inferred from which way current happens to be
+        // flowing right now.
+        uint8_t vbus_status = 0;
+        esp_err_t err       = TryReadRegs(0x00, &vbus_status, 1);
+        if (err != ESP_OK) {
+            return err;
         }
-        return (power_status & 0b00100000) != 0;
+        const bool vbus_good = (vbus_status & 0b00100000) != 0;
+
+        uint8_t power_status = 0;
+        err                  = TryReadRegs(0x01, &power_status, 1);
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        const uint8_t current_direction = (power_status & 0b01100000) >> 5;
+        if (current_direction == 3) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        const bool is_charging_done = (power_status & 0b00000111) == 0b00000100;
+
+        // Ask the PMIC directly first. Inferring external power from current
+        // direction breaks in exactly the case that matters: a full battery on
+        // USB, where the charger has stopped and the board runs off the battery
+        // again, reporting "discharging" with the cable still in.
+        has_external_power = vbus_good || current_direction != 2 || is_charging_done;
+        charging           = current_direction == 1;
+        discharging        = current_direction == 2;
+        return ESP_OK;
+    }
+
+    esp_err_t TryReadBatteryLevel(int& level)
+    {
+        uint8_t battery_level = 0;
+        esp_err_t err         = TryReadRegs(0xA4, &battery_level, 1);
+        if (err != ESP_OK) {
+            return err;
+        }
+        if (battery_level > 100) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+
+        level = battery_level;
+        return ESP_OK;
     }
 
     bool IsExternalPowerConnected()
     {
-        // Ask the PMIC directly first. The fallback below infers external
-        // power from current direction, which breaks in exactly the case that
-        // matters: a full battery on USB, where the charger has stopped and
-        // the board runs off the battery again, reporting "discharging" with
-        // the cable still in.
-        if (IsVbusGood()) {
-            return true;
-        }
-
-        const uint8_t power_status      = ReadReg(0x01);
-        const uint8_t current_direction = (power_status & 0b01100000) >> 5;
-        const bool is_charging_done     = (power_status & 0b00000111) == 0b00000100;
-
-        // Treat any non-discharging state as externally powered so a plugged-in cable
-        // still counts even after the battery is full.
-        return current_direction != 2 || is_charging_done;
+        bool has_external_power = false;
+        bool charging           = false;
+        bool discharging        = false;
+        return TryReadPowerStatus(has_external_power, charging, discharging) == ESP_OK && has_external_power;
     }
 
     // Raw status registers, for diagnosing power-state decisions after the fact.
@@ -400,8 +427,18 @@ private:
 
 class M5StackCoreS3Board : public WifiBoard {
 private:
-    static constexpr int kPowerSaveSleepDelaySeconds = 300;
-    static constexpr int kPowerStatePollIntervalMs   = 1000;
+    static constexpr int kPowerSaveSleepDelaySeconds  = 300;
+    static constexpr int kPowerStatePollIntervalMs    = 1000;
+    static constexpr int kPowerReadErrorLogIntervalMs = 10000;
+
+    struct PowerState {
+        bool has_external_power  = false;
+        bool charging            = false;
+        bool discharging         = false;
+        int battery_level        = 0;
+        bool status_valid        = false;
+        bool battery_level_valid = false;
+    };
 
     i2c_master_bus_handle_t i2c_bus_;
     Pmic* pmic_;
@@ -412,8 +449,12 @@ private:
     esp_timer_handle_t touchpad_timer_;
     PowerSaveTimer* power_save_timer_;
     hal_bridge::XiaozhiConfig_t xiaozhi_config_;
-    bool last_power_save_enabled_      = false;
-    int64_t last_power_state_check_ms_ = 0;
+    std::mutex power_state_mutex_;
+    PowerState power_state_;
+    bool last_power_save_enabled_             = false;
+    int64_t last_power_state_check_ms_        = 0;
+    int64_t last_power_error_log_ms_          = 0;
+    uint32_t consecutive_power_read_failures_ = 0;
 
     bool ShouldEnablePowerSave(bool has_external_power, bool is_discharging) const
     {
@@ -442,6 +483,53 @@ private:
         last_power_save_enabled_ = should_enable_power_save;
     }
 
+    void RefreshPowerState()
+    {
+        bool has_external_power = false;
+        bool charging           = false;
+        bool discharging        = false;
+        int battery_level       = 0;
+        esp_err_t status_err    = pmic_->TryReadPowerStatus(has_external_power, charging, discharging);
+        esp_err_t level_err     = pmic_->TryReadBatteryLevel(battery_level);
+
+        {
+            std::lock_guard<std::mutex> lock(power_state_mutex_);
+            if (status_err == ESP_OK) {
+                power_state_.has_external_power = has_external_power;
+                power_state_.charging           = charging;
+                power_state_.discharging        = discharging;
+                power_state_.status_valid       = true;
+            }
+            if (level_err == ESP_OK) {
+                power_state_.battery_level       = battery_level;
+                power_state_.battery_level_valid = true;
+            }
+        }
+
+        if (status_err == ESP_OK) {
+            UpdatePowerSaveEnabled(has_external_power, discharging);
+        }
+
+        if (status_err != ESP_OK || level_err != ESP_OK) {
+            consecutive_power_read_failures_++;
+            const int64_t now_ms = esp_timer_get_time() / 1000;
+            if (last_power_error_log_ms_ == 0 || (now_ms - last_power_error_log_ms_) >= kPowerReadErrorLogIntervalMs) {
+                ESP_LOGW(TAG, "AXP2101 read failed: status=%s, level=%s; keeping previous values (%lu failure(s))",
+                         esp_err_to_name(status_err), esp_err_to_name(level_err),
+                         static_cast<unsigned long>(consecutive_power_read_failures_));
+                last_power_error_log_ms_ = now_ms;
+            }
+            return;
+        }
+
+        if (consecutive_power_read_failures_ != 0) {
+            ESP_LOGI(TAG, "AXP2101 reads recovered after %lu failure(s)",
+                     static_cast<unsigned long>(consecutive_power_read_failures_));
+            consecutive_power_read_failures_ = 0;
+            last_power_error_log_ms_         = 0;
+        }
+    }
+
     void PollPowerSaveState()
     {
         const int64_t now_ms = esp_timer_get_time() / 1000;
@@ -449,8 +537,7 @@ private:
             return;
         }
         last_power_state_check_ms_ = now_ms;
-
-        UpdatePowerSaveEnabled(pmic_->IsExternalPowerConnected(), pmic_->IsDischarging());
+        RefreshPowerState();
     }
 
     void InitializePowerSaveTimer()
@@ -488,7 +575,7 @@ private:
                      pmic_->IsExternalPowerConnected());
             pmic_->PowerOff();
         });
-        UpdatePowerSaveEnabled(pmic_->IsExternalPowerConnected(), pmic_->IsDischarging());
+        RefreshPowerState();
     }
 
     void InitializeI2c()
@@ -720,6 +807,14 @@ public:
         GetBacklight()->RestoreBrightness();
     }
 
+    // All fallback paths (no saved SSID, timeout, explicit reconfiguration) use
+    // the same BLE App setup flow. Never start the upstream configuration AP.
+    void StartWifiConfigMode() override
+    {
+        ESP_LOGW(TAG, "WiFi setup required; opening StackChan App setup");
+        GetHAL().requestAppSetup();
+    }
+
     virtual AudioCodec* GetAudioCodec() override
     {
         static CoreS3AudioCodec audio_codec(i2c_bus_, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
@@ -741,18 +836,14 @@ public:
 
     virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override
     {
-        charging    = pmic_->IsCharging();
-        discharging = pmic_->IsDischarging();
+        std::lock_guard<std::mutex> lock(power_state_mutex_);
+        if (!power_state_.status_valid || !power_state_.battery_level_valid) {
+            return false;
+        }
 
-        // Route this through the one place that decides, rather than calling
-        // SetEnabled(discharging) here: that ignored external power entirely
-        // and fought PollPowerSaveState() over the same timer, so whichever
-        // ran last won. Anything that polls the battery reaches this -- the
-        // 10 s diagnostics log included -- which is how a plugged-in robot
-        // ended up with its idle shutdown armed.
-        UpdatePowerSaveEnabled(pmic_->IsExternalPowerConnected(), discharging);
-
-        level = pmic_->GetBatteryLevel();
+        level       = power_state_.battery_level;
+        charging    = power_state_.charging;
+        discharging = power_state_.discharging;
         return true;
     }
 

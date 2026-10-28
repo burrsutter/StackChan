@@ -287,6 +287,8 @@ public:
     void requestWarmReboot(int appIndex);
     int getWarmRebootTarget();
     void clearWarmRebootRequest();
+    [[noreturn]] void requestAppSetup();
+    bool consumeAppSetupRequest();
 
     /* --------------------------------- Network -------------------------------- */
     void startNetwork(std::function<void(std::string_view)> onLog);
