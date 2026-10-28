@@ -97,10 +97,10 @@ void AppSetup::onOpen()
                   _destroy_menu = true;
                   _worker       = std::make_unique<MicTestWorker>();
               }},
-             {"RGB Strip",
+             {"RGB LEDs (12)",
               [&]() {
                   _destroy_menu = true;
-                  _worker       = std::make_unique<RgbTestWorker>();
+                  _worker       = std::make_unique<DirectRgbTestWorker>();
               }}},
         },
         {
@@ -168,7 +168,9 @@ void AppSetup::onRunning()
         }
     }
 
-    GetStackChan().update();
+    if (!_worker || _worker->updatesStackChan()) {
+        GetStackChan().update();
+    }
 
     view::update_home_indicator();
     view::update_status_bar();

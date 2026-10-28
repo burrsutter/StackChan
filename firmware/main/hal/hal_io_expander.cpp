@@ -232,3 +232,88 @@ void Hal::showRgbColor(uint8_t r, uint8_t g, uint8_t b)
     }
     refreshRgb();
 }
+
+static void log_rgb_controller_state(uint32_t sequence, const char* phase)
+{
+    m5::RgbControllerState state;
+    const esp_err_t err = _io_expander->readRgbControllerState(state);
+    if (err != ESP_OK) {
+        mclog::tagWarn("RGB-Test", "frame={} {} controller read failed: {}", sequence, phase,
+                       esp_err_to_name(err));
+        return;
+    }
+    mclog::tagInfo("RGB-Test", "frame={} {} uid=0x{:04X} ver=0x{:02X} cfg=0x{:02X} i2c=0x{:02X}",
+                   sequence, phase, state.uid, state.version, state.led_config, state.i2c_config);
+    mclog::tagInfo("RGB-Test", "frame={} {} mode=0x{:04X} out=0x{:04X} in=0x{:04X} pu=0x{:04X} pd=0x{:04X} drive=0x{:04X}",
+                   sequence, phase, state.gpio_mode, state.gpio_output, state.gpio_input,
+                   state.pull_up, state.pull_down, state.drive);
+    const bool output = (state.gpio_mode & (1 << 13)) != 0;
+    const bool open_drain = (state.drive & (1 << 13)) != 0;
+    mclog::tagInfo("RGB-Test", "frame={} {} LED pin13 output={} open_drain={} VM={} count={} refresh={}",
+                   sequence, phase, output, open_drain, (state.gpio_output & 1) != 0,
+                   state.led_config & 0x3F, (state.led_config & 0x40) != 0);
+}
+
+bool Hal::writeRgbFrame(const std::array<uint32_t, 12>& colors, RgbFrameReport* report)
+{
+    if (report) *report = {};
+    if (!_io_expander) return false;
+    static uint32_t sequence = 0;
+    const uint32_t current_sequence = ++sequence;
+    mclog::tagInfo("RGB-Test", "frame={} begin first={:06X} last={:06X}", current_sequence,
+                   colors.front(), colors.back());
+    log_rgb_controller_state(current_sequence, "before");
+    std::array<uint16_t, 12> frame;
+    for (size_t i = 0; i < colors.size(); ++i) {
+        const uint32_t rgb = colors[i];
+        frame[i] = (((rgb >> 16) & 0xF8) << 8) |
+                   (((rgb >> 8) & 0xFC) << 3) | ((rgb & 0xFF) >> 3);
+    }
+    // Count stays 12. Do not widen it: on 2026-09-26 writing LED RAM beyond
+    // 12 entries disturbed the PY32 expander and killed touch input until a
+    // power cycle (revision 7 tried it again and was reverted unflown).
+    const esp_err_t err = _io_expander->writeLedFrame(frame.data(), frame.size());
+    if (err != ESP_OK) {
+        mclog::tagWarn(_tag, "RGB frame write failed: {}", esp_err_to_name(err));
+    }
+    if (err == ESP_OK) {
+        // Revision 6 experiment: is a single refresh unreliable (timing or bus
+        // contention during the controller's LED output), or is the visible
+        // truncation deterministic? Probe the busy bit 2 ms after the first
+        // refresh, then re-send the same RAM nine more times with no reads
+        // in between. RAM is untouched, so the readback below still applies.
+        vTaskDelay(pdMS_TO_TICKS(2));
+        uint8_t cfg_2ms = 0xFF;
+        const esp_err_t probe_err = _io_expander->readLedConfig(cfg_2ms);
+        mclog::tagInfo("RGB-Test", "frame={} cfg@2ms=0x{:02X} refresh_busy={} ({})", current_sequence,
+                       cfg_2ms, (cfg_2ms & 0x40) != 0, esp_err_to_name(probe_err));
+        int pulses_ok = 0;
+        for (int i = 0; i < 9; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            if (_io_expander->pulseLedRefresh(frame.size()) == ESP_OK) ++pulses_ok;
+        }
+        mclog::tagInfo("RGB-Test", "frame={} extra refresh pulses ok={}/9", current_sequence, pulses_ok);
+    }
+    if (report && err == ESP_OK) {
+        // Report actual controller registers rather than only ACKed writes.
+        vTaskDelay(pdMS_TO_TICKS(30));
+        log_rgb_controller_state(current_sequence, "after");
+        uint8_t config = 0;
+        std::array<uint16_t, 12> readback{};
+        const esp_err_t read_err = _io_expander->readLedFrame(config, readback.data(), readback.size());
+        if (read_err == ESP_OK) {
+            report->config = config;
+            report->matched = 0;
+            for (size_t i = 0; i < frame.size(); ++i) {
+                if (readback[i] == frame[i]) ++report->matched;
+                mclog::tagInfo("RGB-Test", "LED {} sent={:04X} read={:04X}", i, frame[i], readback[i]);
+            }
+            mclog::tagInfo("RGB-Test", "config=0x{:02X} count={} RAM match={}/12", config,
+                           config & 0x3F, report->matched);
+        } else {
+            mclog::tagWarn("RGB-Test", "RAM readback failed: {}", esp_err_to_name(read_err));
+        }
+    }
+    mclog::tagInfo("RGB-Test", "frame={} end write={}", current_sequence, err == ESP_OK);
+    return err == ESP_OK;
+}

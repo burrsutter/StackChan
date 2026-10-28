@@ -27,6 +27,9 @@ public:
     {
     }
 
+    // A direct hardware test can pause animation writes to its peripherals.
+    virtual bool updatesStackChan() const { return true; }
+
     bool isDone() const
     {
         return _is_done;
@@ -159,6 +162,22 @@ public:
 private:
     std::unique_ptr<uitk::lvgl_cpp::Container> _panel;
     std::vector<std::unique_ptr<uitk::lvgl_cpp::Button>> _buttons;
+};
+
+class DirectRgbTestWorker : public WorkerBase {
+public:
+    DirectRgbTestWorker();
+    ~DirectRgbTestWorker();
+    void update() override;
+    bool updatesStackChan() const override { return false; }
+
+private:
+    void apply_frame();
+    std::unique_ptr<uitk::lvgl_cpp::Container> _panel;
+    std::unique_ptr<uitk::lvgl_cpp::Label> _status;
+    std::vector<std::unique_ptr<uitk::lvgl_cpp::Button>> _buttons;
+    int _color = 0;
+    bool _dirty = false;
 };
 
 /**

@@ -24,6 +24,8 @@ public:
 
     void init();
     void update();
+    // Leave the LEDs as they are until a subsequent explicit color command.
+    void stopAnimation() { _stopped = true; _snap_to_target_on_rest = false; }
 
     void setColor(uint8_t r, uint8_t g, uint8_t b);
     void setColor(const uitk::color::Rgb_t& rgb);
@@ -42,6 +44,7 @@ protected:
 private:
     int _led_count;
     bool _is_inited              = false;
+    bool _stopped                = false;
     bool _snap_to_target_on_rest = false;
     uint32_t _last_tick          = 0;
     uitk::color::AnimateRgb_t _color_anim;

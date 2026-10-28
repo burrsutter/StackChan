@@ -22,6 +22,11 @@
  */
 enum class HeadPetGesture { None, Press, Release, SwipeForward, SwipeBackward };
 
+struct RgbFrameReport {
+    int config = -1;
+    int matched = -1;
+};
+
 /**
  * @brief
  *
@@ -247,6 +252,7 @@ public:
     void setRgbColor(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
     void showRgbColor(uint8_t r, uint8_t g, uint8_t b);
     void refreshRgb();
+    bool writeRgbFrame(const std::array<uint32_t, 12>& colors, RgbFrameReport* report = nullptr);
 
     /* ---------------------------------- Power --------------------------------- */
     void setServoPowerEnabled(bool enabled);

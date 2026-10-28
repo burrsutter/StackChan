@@ -19,6 +19,7 @@ void NeonLight::init()
 
 void NeonLight::update()
 {
+    if (_stopped) return;
     if (!_is_inited) {
         init();
     }
@@ -50,24 +51,28 @@ void NeonLight::update()
 
 void NeonLight::setColor(uint8_t r, uint8_t g, uint8_t b)
 {
+    _stopped = false;
     _color_anim.move(r, g, b);
     _snap_to_target_on_rest = true;
 }
 
 void NeonLight::setColor(const uitk::color::Rgb_t& rgb)
 {
+    _stopped = false;
     _color_anim.move(rgb);
     _snap_to_target_on_rest = true;
 }
 
 void NeonLight::setColor(uint32_t hex)
 {
+    _stopped = false;
     _color_anim.move(hex);
     _snap_to_target_on_rest = true;
 }
 
 void NeonLight::setColor(std::string_view hex)
 {
+    _stopped = false;
     _color_anim.move(hex);
     _snap_to_target_on_rest = true;
 }

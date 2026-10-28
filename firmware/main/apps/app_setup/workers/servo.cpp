@@ -511,3 +511,89 @@ RgbTestWorker::~RgbTestWorker()
     GetStackChan().leftNeonLight().setColor(0, 0, 0);
     GetStackChan().rightNeonLight().setColor(0, 0, 0);
 }
+
+DirectRgbTestWorker::DirectRgbTestWorker()
+{
+    // Entry and exit never send LED commands. Stop pending animations so
+    // only an explicit color tap can change the test output.
+    GetStackChan().leftNeonLight().stopAnimation();
+    GetStackChan().rightNeonLight().stopAnimation();
+    _panel = std::make_unique<Container>(lv_screen_active());
+    _panel->setBgColor(lv_color_hex(0xFFFFFF));
+    _panel->setBorderWidth(0);
+    _panel->setRadius(0);
+    _panel->setSize(320, 210);
+    _panel->align(LV_ALIGN_CENTER, 0, 8);
+    _panel->setPadding(0, 0, 0, 0);
+    lv_obj_remove_flag(_panel->get(), LV_OBJ_FLAG_SCROLLABLE);
+
+    _status = std::make_unique<Label>(*_panel);
+    _status->setTextFont(&lv_font_montserrat_14);
+    _status->setTextColor(lv_color_hex(0x26206A));
+    _status->align(LV_ALIGN_TOP_MID, 0, 3);
+    _status->setText("All 12 LEDs\nTap a color. Both rows should match.");
+
+    // Four large, complete test cases: there is no selected target or mode.
+    const std::array<int, 4> cases = {0, 1, 2, 7}; // Red, Green, Blue, Off.
+    for (size_t i = 0; i < cases.size(); ++i) {
+        const int color = cases[i];
+        auto btn = std::make_unique<Button>(*_panel);
+        apply_button_common_style(*btn);
+        btn->setSize(144, 56);
+        btn->setRadius(8);
+        btn->label().setTextFont(&lv_font_montserrat_20);
+        btn->label().setText(_rgb_colors[color].name);
+        btn->align(LV_ALIGN_TOP_LEFT, 8 + (i % 2) * 160, 45 + (i / 2) * 62);
+        btn->onClick().connect([this, color]() {
+            _color = color;
+            _dirty = true;
+        });
+        _buttons.push_back(std::move(btn));
+    }
+    auto back = std::make_unique<Button>(*_panel);
+    apply_button_common_style(*back);
+    back->setSize(304, 34);
+    back->setRadius(8);
+    back->label().setTextFont(&lv_font_montserrat_20);
+    back->label().setText("Back");
+    back->align(LV_ALIGN_TOP_LEFT, 8, 173);
+    back->onClick().connect([this]() {
+        _dirty = false;
+        _is_done = true;
+    });
+    _buttons.push_back(std::move(back));
+    mclog::tagInfo("RGB-Test", "simple all-12 test: no LED writes until a color is tapped");
+}
+
+DirectRgbTestWorker::~DirectRgbTestWorker()
+{
+    mclog::tagInfo("RGB-Test", "closed: LED state preserved");
+}
+
+void DirectRgbTestWorker::update()
+{
+    if (_dirty) apply_frame();
+}
+
+void DirectRgbTestWorker::apply_frame()
+{
+    const auto& color = _rgb_colors[_color];
+    const uint32_t rgb = (static_cast<uint32_t>(color.r) << 16) |
+                         (static_cast<uint32_t>(color.g) << 8) | color.b;
+    std::array<uint32_t, 12> frame;
+    frame.fill(rgb);
+    RgbFrameReport report;
+    const bool success = GetHAL().writeRgbFrame(frame, &report);
+    _dirty = false;
+    if (!success) {
+        _status->setText("All 12 LEDs\nLED command failed. Tap to retry.");
+    } else if (report.config < 0 || (report.config & 0x3F) != 12 || report.matched != 12) {
+        _status->setText("All 12 LEDs\nController check failed. Tap to retry.");
+    } else {
+        // Register readback cannot establish which physical LEDs lit.
+        _status->setText(fmt::format("Sent {} to all 12 LEDs\nCheck both rows.", color.name));
+    }
+    mclog::tagInfo("RGB-Test", "all 12 color={} RGB=({}, {}, {}) I2C={} config={} RAM={}/12",
+                   color.name, color.r, color.g, color.b, success ? "OK" : "FAILED",
+                   report.config, report.matched);
+}

@@ -11,6 +11,19 @@
 
 namespace m5 {
 
+struct RgbControllerState {
+    uint16_t uid = 0;
+    uint8_t version = 0;
+    uint8_t i2c_config = 0;
+    uint8_t led_config = 0;
+    uint16_t gpio_mode = 0;
+    uint16_t gpio_output = 0;
+    uint16_t gpio_input = 0;
+    uint16_t pull_up = 0;
+    uint16_t pull_down = 0;
+    uint16_t drive = 0;
+};
+
 class PY32IOExpander_Class {
 public:
     static constexpr uint8_t DEFAULT_ADDRESS = 0x6F;
@@ -72,6 +85,15 @@ public:
     void setLedColor(uint8_t index, uint32_t color);
     void setLedData(const uint8_t* data, size_t len);
     void refreshLeds();
+    // Write a complete frame with checked I2C results and an explicit LED count.
+    esp_err_t writeLedFrame(const uint16_t* colors, size_t count);
+    // Re-send the stored RAM to the chain: one count|refresh write, no reads.
+    esp_err_t pulseLedRefresh(size_t count);
+    // Single read of LED_CFG (0x24); used to probe whether refresh is still busy.
+    esp_err_t readLedConfig(uint8_t& config);
+    esp_err_t readLedFrame(uint8_t& config, uint16_t* colors, size_t count);
+    // Read-only diagnostics; no reset or GPIO/LED writes.
+    esp_err_t readRgbControllerState(RgbControllerState& state);
 
 private:
     i2c_master_dev_handle_t _i2c_dev;

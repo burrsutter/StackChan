@@ -360,4 +360,78 @@ void PY32IOExpander_Class::refreshLeds()
     writeRegister8(REG_LED_CFG, val | (1 << 6));
 }
 
+esp_err_t PY32IOExpander_Class::writeLedFrame(const uint16_t* colors, size_t count)
+{
+    if (!colors || count == 0 || count > 32) return ESP_ERR_INVALID_ARG;
+    // Explicitly restore the count before every frame. Refresh without a
+    // read-modify-write so a failed config read cannot silently clear it.
+    esp_err_t err = writeRegister8(REG_LED_CFG, count);
+    if (err != ESP_OK) return err;
+    // Follow the vendor Hal::showRgbColor sequence: set each indexed color,
+    // then refresh once after the complete frame. Keep error checking here.
+    for (size_t i = 0; i < count; ++i) {
+        const uint8_t data[2] = {static_cast<uint8_t>(colors[i]),
+                                 static_cast<uint8_t>(colors[i] >> 8)};
+        err = writeRegister(REG_LED_RAM_START + i * 2, data, sizeof(data));
+        if (err != ESP_OK) return err;
+    }
+    return writeRegister8(REG_LED_CFG, count | (1 << 6));
+}
+
+esp_err_t PY32IOExpander_Class::pulseLedRefresh(size_t count)
+{
+    if (count == 0 || count > 32) return ESP_ERR_INVALID_ARG;
+    return writeRegister8(REG_LED_CFG, static_cast<uint8_t>(count) | (1 << 6));
+}
+
+esp_err_t PY32IOExpander_Class::readLedConfig(uint8_t& config)
+{
+    return readRegister(REG_LED_CFG, &config, 1);
+}
+
+esp_err_t PY32IOExpander_Class::readLedFrame(uint8_t& config, uint16_t* colors, size_t count)
+{
+    if (!colors || count == 0 || count > 32) return ESP_ERR_INVALID_ARG;
+    esp_err_t err = readRegister(REG_LED_CFG, &config, 1);
+    if (err != ESP_OK) return err;
+    for (size_t i = 0; i < count; ++i) {
+        uint8_t data[2];
+        err = readRegister(REG_LED_RAM_START + i * 2, data, 2);
+        if (err != ESP_OK) return err;
+        colors[i] = data[0] | (static_cast<uint16_t>(data[1]) << 8);
+    }
+    return ESP_OK;
+}
+
+esp_err_t PY32IOExpander_Class::readRgbControllerState(RgbControllerState& state)
+{
+    RgbControllerState sample;
+    auto word = [this](uint8_t reg, uint16_t& value) {
+        uint8_t data[2];
+        const esp_err_t err = readRegister(reg, data, sizeof(data));
+        if (err == ESP_OK) value = data[0] | (static_cast<uint16_t>(data[1]) << 8);
+        return err;
+    };
+    esp_err_t err = word(REG_UID_L, sample.uid);
+    if (err != ESP_OK) return err;
+    err = readRegister(REG_VERSION, &sample.version, 1);
+    if (err != ESP_OK) return err;
+    const struct { uint8_t reg; uint16_t* value; } pairs[] = {
+        {REG_GPIO_M_L, &sample.gpio_mode}, {REG_GPIO_O_L, &sample.gpio_output},
+        {REG_GPIO_I_L, &sample.gpio_input}, {REG_GPIO_PU_L, &sample.pull_up},
+        {REG_GPIO_PD_L, &sample.pull_down}, {REG_GPIO_DRV_L, &sample.drive},
+    };
+    for (const auto& pair : pairs) {
+        err = word(pair.reg, *pair.value);
+        if (err != ESP_OK) return err;
+    }
+    uint8_t config[2];
+    err = readRegister(0x23, config, sizeof(config));
+    if (err != ESP_OK) return err;
+    sample.i2c_config = config[0];
+    sample.led_config = config[1];
+    state = sample;
+    return ESP_OK;
+}
+
 }  // namespace m5
