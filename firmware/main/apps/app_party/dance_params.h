@@ -176,7 +176,12 @@ struct BeatDetectParams_t {
     int rhythmMinGaps          = 6;      // fewer than this scores 0
     float rhythmTolerance      = 0.15f;  // fraction of a period
     float rhythmOnset          = 0.75f;  // score needed, held for musicOnsetHoldMs
-    float rhythmStop           = 0.45f;  // below this (for the grace) stops
+    float rhythmStop           = 0.45f;  // below this (for rhythmStopGraceMs) stops
+    // Loud but unsteady is given far longer than quiet before stopping.
+    // Measured 2026-10-29: a 125 bpm song's busy section scored 0.00-0.12
+    // (period read as 287 ms) and the 4 s grace stopped the show mid-song for
+    // ~10 s. Cost: talk right after a song can keep him nodding this long.
+    uint32_t rhythmStopGraceMs = 20000;
     // A "period" shorter than this is syllables, not a beat: speech runs at
     // 4-5 syllables a second, which the 250 ms beat cooldown would otherwise
     // flatten into a suspiciously steady grid. Measured on a speech video:

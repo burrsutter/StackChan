@@ -127,7 +127,8 @@ void BeatDetector::run()
     uint32_t bpm_window_start = GetHAL().millis();
     uint32_t bpm_beat_count   = 0;
     uint32_t quiet_log_tick   = GetHAL().millis();
-    uint32_t above_floor_since = 0;
+    uint32_t onset_steady_ms   = 0;  // time steady enough to start, this attempt
+    uint32_t onset_prev_tick   = 0;  // 0 = no attempt in progress
     uint32_t below_stop_since  = 0;
 
     // Recent bass hits, for the rhythm check. Recorded whether or not music
@@ -256,24 +257,40 @@ void BeatDetector::run()
             // Music = loud enough AND steady. Level alone let loud speech in.
             bool playing = was_playing;
             if (was_playing) {
-                if (average > stop_level && rhythm >= kBeatDetect.rhythmStop) {
+                // A song going quiet ends the show quickly; a song merely
+                // getting busy (fills, syncopation) is given much longer,
+                // since only the onset needs rhythm to keep speech out.
+                const bool quiet  = average <= stop_level;
+                const bool steady = rhythm >= kBeatDetect.rhythmStop;
+                if (!quiet && steady) {
                     below_stop_since = 0;
                 } else {
                     if (below_stop_since == 0) {
                         below_stop_since = now;
                     }
-                    playing = now - below_stop_since < kBeatDetect.musicStopGraceMs;
+                    const uint32_t grace = quiet ? kBeatDetect.musicStopGraceMs : kBeatDetect.rhythmStopGraceMs;
+                    playing = now - below_stop_since < grace;
                 }
-            } else if (average > kBeatDetect.noiseFloor && rhythm >= kBeatDetect.rhythmOnset) {
-                if (above_floor_since == 0) {
-                    above_floor_since = now;
+            } else if (average > kBeatDetect.noiseFloor &&
+                       (rhythm >= kBeatDetect.rhythmOnset ||
+                        (onset_prev_tick != 0 && rhythm >= kBeatDetect.rhythmStop))) {
+                // Count only the time at or above rhythmOnset. A dip under it
+                // pauses the count rather than restarting it: a song hovering
+                // at 0.69-0.85 took 25 s to clear an unbroken 3 s hold. Speech
+                // still fails, since it sinks below rhythmStop between its
+                // brief highs and that restarts the count.
+                if (onset_prev_tick != 0 && rhythm >= kBeatDetect.rhythmOnset) {
+                    onset_steady_ms += now - onset_prev_tick;
                 }
-                playing = now - above_floor_since >= kBeatDetect.musicOnsetHoldMs;
+                onset_prev_tick = now;
+                playing = onset_steady_ms >= kBeatDetect.musicOnsetHoldMs;
             } else {
-                above_floor_since = 0;
+                onset_prev_tick = 0;
+                onset_steady_ms = 0;
             }
             if (playing) {
-                above_floor_since = 0;
+                onset_prev_tick = 0;
+                onset_steady_ms = 0;
             } else {
                 below_stop_since = 0;
             }
