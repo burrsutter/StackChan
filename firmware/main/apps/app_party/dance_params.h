@@ -188,6 +188,15 @@ struct BeatDetectParams_t {
     // its brief false highs had periods of 280-290 ms. 300 ms = 200 bpm.
     uint32_t rhythmMinPeriodMs = 300;
 
+    // Loud enough that it can only be music: a bass average held above this
+    // for loudMusicHoldMs starts the show, and keeps it going, whatever the
+    // rhythm score says. Measured 2026-11-01: a song at ~200-370k scored
+    // rhythm 0.00-0.83 and never started, while the speech video that
+    // motivated the rhythm check averaged ~47k (bursts to 136k). Below this,
+    // the rhythm check still decides.
+    float loudMusicLevel     = 150000.0f;
+    uint32_t loudMusicHoldMs = 3000;
+
     // Require the energy to be RISING to call a beat, so the attack of a kick
     // triggers once instead of the whole sustained note re-triggering.
     bool requireRisingEnergy = true;

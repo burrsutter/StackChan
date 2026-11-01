@@ -130,6 +130,7 @@ void BeatDetector::run()
     uint32_t onset_steady_ms   = 0;  // time steady enough to start, this attempt
     uint32_t onset_prev_tick   = 0;  // 0 = no attempt in progress
     uint32_t below_stop_since  = 0;
+    uint32_t loud_since        = 0;  // 0 = average not above loudMusicLevel
 
     // Recent bass hits, for the rhythm check. Recorded whether or not music
     // mode is on, since starting it now depends on them.
@@ -254,6 +255,16 @@ void BeatDetector::run()
             }
             rhythm = score_rhythm(now);
 
+            // Far louder than speech gets: music, steady or not.
+            if (average > kBeatDetect.loudMusicLevel) {
+                if (loud_since == 0) {
+                    loud_since = now;
+                }
+            } else {
+                loud_since = 0;
+            }
+            const bool loud = loud_since != 0 && now - loud_since >= kBeatDetect.loudMusicHoldMs;
+
             // Music = loud enough AND steady. Level alone let loud speech in.
             bool playing = was_playing;
             if (was_playing) {
@@ -261,7 +272,7 @@ void BeatDetector::run()
                 // getting busy (fills, syncopation) is given much longer,
                 // since only the onset needs rhythm to keep speech out.
                 const bool quiet  = average <= stop_level;
-                const bool steady = rhythm >= kBeatDetect.rhythmStop;
+                const bool steady = loud || rhythm >= kBeatDetect.rhythmStop;
                 if (!quiet && steady) {
                     below_stop_since = 0;
                 } else {
@@ -288,6 +299,9 @@ void BeatDetector::run()
                 onset_prev_tick = 0;
                 onset_steady_ms = 0;
             }
+            if (!was_playing && loud) {
+                playing = true;
+            }
             if (playing) {
                 onset_prev_tick = 0;
                 onset_steady_ms = 0;
@@ -312,8 +326,9 @@ void BeatDetector::run()
             _music_playing = playing;
 
             if (playing != was_playing) {
-                mclog::tagInfo(_tag, "music {} (rhythm {:.2f} over {} gaps, period {} ms)",
-                               playing ? "detected" : "stopped", rhythm, rhythm_gaps, rhythm_period_ms);
+                mclog::tagInfo(_tag, "music {} (energy {:.0f}{}, rhythm {:.2f} over {} gaps, period {} ms)",
+                               playing ? "detected" : "stopped", average, loud ? " loud" : "", rhythm, rhythm_gaps,
+                               rhythm_period_ms);
                 was_playing      = playing;
                 bpm_window_start = now;
                 bpm_beat_count   = 0;

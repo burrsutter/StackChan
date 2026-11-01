@@ -458,7 +458,8 @@ void AppParty::park_at_neutral()
     // Sync from the servo's real angle first: with torque release the head can
     // droop or be moved by hand, and animating from a stale pose would jump.
     motion.setAutoAngleSyncEnabled(true);
-    _nod_yaw  = std::clamp(kDanceMoves.yawNeutralOffset, kDanceMoves.yawSafeMin, kDanceMoves.yawSafeMax);
+    _nod_yaw  = std::clamp(kDanceMoves.yawCenter + kDanceMoves.yawNeutralOffset, kDanceMoves.yawSafeMin,
+                           kDanceMoves.yawSafeMax);
     _nod_down = false;
     motion.moveWithSpeed(_nod_yaw,
                          std::clamp(kDanceMoves.pitchCenter, kDanceMoves.pitchSafeMin, kDanceMoves.pitchSafeMax),
@@ -617,18 +618,21 @@ void AppParty::move_to_beat(float strength)
     const int dip      = static_cast<int>(kDanceMoves.nodDip * scale);
 
     // Optional slow sway, one step every four beats. Off unless yawSwing is set.
-    int yaw = kDanceMoves.yawCenter;
+    // Measured from the trimmed centre, the same pose park_at_neutral() uses,
+    // so the first beat does not swing the head off-centre.
+    const int centre = kDanceMoves.yawCenter + kDanceMoves.yawNeutralOffset;
+    int yaw          = centre;
     if (kDanceMoves.yawSwing != 0) {
         const int swing = static_cast<int>(kDanceMoves.yawSwing * scale);
         switch (_beat_step) {
             case 0:
-                yaw = kDanceMoves.yawCenter - swing;
+                yaw = centre - swing;
                 break;
             case 2:
-                yaw = kDanceMoves.yawCenter + swing;
+                yaw = centre + swing;
                 break;
             default:
-                yaw = kDanceMoves.yawCenter;
+                yaw = centre;
                 break;
         }
     }
