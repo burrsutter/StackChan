@@ -133,6 +133,30 @@ public:
         ESP_LOGW(TAG, "PMIC latched irq at boot: 0x48=0x%02X 0x49=0x%02X 0x4A=0x%02X  die_temp_raw=0x%04X",
                  ReadReg(0x48), ReadReg(0x49), ReadReg(0x4A), ReadDieTempRaw());
 
+        // The IRQ flags above only show the power-on events, not why the last
+        // run ended. The AXP2101 records that separately: 0x20 is what powered
+        // this run on, 0x21 what powered the last one off. 0x22 says which
+        // power-off sources are armed and 0x24 sets the VSYS under-voltage
+        // cut-off (2.6 V + 0.1 V per step in bits 2:0). Bit names follow the
+        // datasheet register map; the raw values are logged too in case that
+        // reading of it is wrong for this part.
+        const int pwron  = ReadReg(0x20);
+        const int pwroff = ReadReg(0x21);
+        ESP_LOGW(TAG, "PMIC power-on reason 0x20=0x%02X, last power-off reason 0x21=0x%02X, off-enable 0x22=0x%02X, "
+                 "vsys_off 0x24=0x%02X",
+                 pwron, pwroff, ReadReg(0x22), ReadReg(0x24));
+        if (pwroff > 0) {
+            static constexpr const char* kOffReasons[8] = {
+                "power key held for off", "software power-off", "power key held 16 s", "VSYS under-voltage",
+                "VBUS over-voltage",      "DCDC under-voltage", "DCDC over-voltage",  "die over-temperature",
+            };
+            for (int bit = 0; bit < 8; bit++) {
+                if (pwroff & (1 << bit)) {
+                    ESP_LOGW(TAG, "PMIC last power-off: %s", kOffReasons[bit]);
+                }
+            }
+        }
+
         SetBrightness(0);
     }
 
