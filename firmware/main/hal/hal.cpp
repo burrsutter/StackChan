@@ -7,6 +7,8 @@
 #include "board/hal_bridge.h"
 #include <driver/temperature_sensor.h>
 #include <memory>
+#include <algorithm>
+#include <iterator>
 #include <mooncake_log.h>
 #include <nvs_flash.h>
 
@@ -124,11 +126,13 @@ static float _read_soc_temp_celsius()
 {
     static temperature_sensor_handle_t handle = nullptr;
     if (handle == nullptr) {
-        temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 110);
+        temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
         if (temperature_sensor_install(&cfg, &handle) != ESP_OK) {
             return -1000.0f;
         }
         if (temperature_sensor_enable(handle) != ESP_OK) {
+            temperature_sensor_uninstall(handle);
+            handle = nullptr;
             return -1000.0f;
         }
     }
@@ -141,26 +145,56 @@ static float _read_soc_temp_celsius()
 
 void Hal::updatePowerTelemetryLog()
 {
-    // Sampled every 2s rather than the 10s of the heap log: the board has been
-    // dying abruptly between 10s samples, so the trend right up to the cut was
-    // never captured. Uptime is logged explicitly so time-of-death needs no
-    // clock arithmetic to pin down.
-    static uint32_t last_tick = 0;
-    uint32_t now              = millis();
-    if (last_tick != 0 && now - last_tick < 2000) {
+    // Sample in the app loop at up to 10 Hz, retaining minima across each
+    // two-second report. Count and maximum gap expose stalls in this loop;
+    // even these samples cannot capture a regulator transient below 100 ms.
+    static uint32_t last_sample_tick = 0;
+    static uint32_t last_report_tick = 0;
+    static uint32_t max_gap_ms       = 0;
+    static uint32_t samples          = 0;
+    static uint32_t read_errors      = 0;
+    static int minima[3]            = {-1, -1, -1};
+    static int previous_irq         = -1;
+    const uint32_t now              = millis();
+    if (last_sample_tick != 0 && now - last_sample_tick < 100) {
         return;
     }
-    last_tick = now;
+    if (last_sample_tick != 0) {
+        max_gap_ms = std::max(max_gap_ms, now - last_sample_tick);
+    }
+    last_sample_tick = now;
 
     int adc[4] = {-1, -1, -1, -1};
     hal_bridge::board_get_adc_block(adc);
+    if (adc[0] >= 0) {
+        const int volts[3] = {adc[0], adc[2], adc[3]};
+        for (int i = 0; i < 3; ++i) {
+            minima[i] = minima[i] < 0 ? volts[i] : std::min(minima[i], volts[i]);
+        }
+        ++samples;
+    } else {
+        ++read_errors;
+    }
+    if (last_report_tick != 0 && now - last_report_tick < 2000) {
+        return;
+    }
+    last_report_tick = now;
 
-    // The gauge percentage is kept in the line only for comparison: it read a
-    // stuck 100% while the charger was still in bulk-charge phase, so the ADC
-    // values below are the trustworthy ones.
-    mclog::tagInfo(_tag, "pwr up={}s batt={}% {} ext={} axp=0x{:04X} adc=[{},{},{},{}]", now / 1000,
+    const int irq = hal_bridge::board_get_irq_status();
+    if (irq != previous_irq) {
+        mclog::tagInfo(_tag, "PMIC IRQ change: prev={} now={} (-1=read_error; flags retained)",
+                       previous_irq, irq);
+        previous_irq = irq;
+    }
+    mclog::tagInfo(_tag, "pwr up={}s batt={}% {} ext={} axp=0x{:04X} adc=[{},{},{},{}] "
+                   "min_mv=[{},{},{}] samples={} read_errors={} max_gap_ms={} "
+                   "irq={} die_raw={} soc_c={:.1f}", now / 1000,
                    getBatteryLevel(), isBatteryCharging() ? "chg" : "dis", isExternalPowerConnected() ? 1 : 0,
-                   hal_bridge::board_get_power_status_regs(), adc[0], adc[1], adc[2], adc[3]);
+                   hal_bridge::board_get_power_status_regs(), adc[0], adc[1], adc[2], adc[3],
+                   minima[0], minima[1], minima[2], samples, read_errors, max_gap_ms, irq,
+                   hal_bridge::board_get_die_temp_raw(), _read_soc_temp_celsius());
+    std::fill(std::begin(minima), std::end(minima), -1);
+    samples = read_errors = max_gap_ms = 0;
 }
 
 void Hal::updateHeapStatusLog()

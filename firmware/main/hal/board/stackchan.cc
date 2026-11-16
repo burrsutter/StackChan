@@ -108,7 +108,9 @@ public:
         WriteReg(0x95, 33 - 5);
         WriteReg(0x27, 0x00);
 
-        auto ret = setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_700MA);
+        // Diagnostic trial: leave more input headroom for the running robot.
+        // Compare voltage minima and survival with the original 700 mA limit.
+        auto ret = setChargerConstantCurr(XPOWERS_AXP2101_CHG_CUR_200MA);
         if (!ret) {
             ESP_LOGE(TAG, "Set charge current failed");
         } else {
@@ -127,6 +129,10 @@ public:
         //   0x62 = battery charge constant-current, set just above
         ESP_LOGI(TAG, "PMIC input limits: vin_dpm(0x15)=0x%02X in_curr(0x16)=0x%02X charge_cc(0x62)=0x%02X",
                  ReadReg(0x15), ReadReg(0x16), ReadReg(0x62));
+        ESP_LOGI(TAG, "PMIC regulator config: uvp_ovp(0x23)=0x%02X enable(0x80)=0x%02X "
+                 "mode(0x81)=0x%02X dcdc1..5=[0x%02X,0x%02X,0x%02X,0x%02X,0x%02X]",
+                 ReadReg(0x23), ReadReg(0x80), ReadReg(0x81), ReadReg(0x82), ReadReg(0x83),
+                 ReadReg(0x84), ReadReg(0x85), ReadReg(0x86));
 
         // Dumped first thing at boot: if the previous run ended in a PMIC-level
         // power-off with no software trace, the reason may still be latched here.
@@ -269,32 +275,26 @@ public:
         return 0;
     }
 
-    // Raw die-temperature ADC (0xA5 high, 0xA6 low). Logged un-converted: the
-    // AXP2101 scaling is not established here, and a rising raw trend is what
-    // the thermal question actually needs -- an invented conversion would only
-    // look authoritative while being wrong.
+    // AXP2101 datasheet V1.0: die-temperature ADC at 0x3C/0x3D, high six
+    // bits first. Keep the raw reading until its conversion is established.
     int ReadDieTempRaw()
     {
-        const int hi = ReadReg(0xA5);
-        const int lo = ReadReg(0xA6);
-        if (hi == -1 || lo == -1) {
+        uint8_t data[2];
+        if (TryReadRegs(0x3C, data, sizeof(data)) != ESP_OK) {
             return -1;
         }
-        return ((hi & 0xFF) << 8) | (lo & 0xFF);
+        return ((data[0] & 0x3F) << 8) | data[1];
     }
 
-    // AXP2101 ADC result block, 0x34..0x3B, as four raw 16-bit big-endian pairs.
-    // Which pair is battery / VBUS / VSYS is NOT asserted here: an earlier guess
-    // at a register address from memory was wrong (0x15 is the input VOLTAGE
-    // limit, not current), so these are logged raw and identified empirically by
-    // magnitude -- battery sits near 3700-4200 mV, VBUS near 5000, and that is
-    // unambiguous without trusting a recalled register map.
+    // Datasheet V1.0: VBAT, TS, VBUS, VSYS at 0x34..0x3B. Read high then
+    // low in one transaction and strip the non-ADC bits from each high byte.
+    // A failed transfer invalidates the entire sample.
     void ReadAdcBlock(int out[4])
     {
+        uint8_t data[8];
+        const bool valid = TryReadRegs(0x34, data, sizeof(data)) == ESP_OK;
         for (int i = 0; i < 4; i++) {
-            const int hi = ReadReg(0x34 + i * 2);
-            const int lo = ReadReg(0x35 + i * 2);
-            out[i]       = (hi == -1 || lo == -1) ? -1 : (((hi & 0xFF) << 8) | (lo & 0xFF));
+            out[i] = valid ? (((data[i * 2] & 0x3F) << 8) | data[i * 2 + 1]) : -1;
         }
     }
 
@@ -304,9 +304,13 @@ public:
     // cleared, since clearing them would destroy the evidence.
     int ReadIrqStatus(int& irq0, int& irq1, int& irq2)
     {
-        irq0 = ReadReg(0x48);
-        irq1 = ReadReg(0x49);
-        irq2 = ReadReg(0x4A);
+        uint8_t data[3];
+        if (TryReadRegs(0x48, data, sizeof(data)) != ESP_OK) {
+            return -1;
+        }
+        irq0 = data[0];
+        irq1 = data[1];
+        irq2 = data[2];
         return 0;
     }
 };
@@ -580,10 +584,12 @@ private:
 
         power_save_timer_ = new PowerSaveTimer(-1, seconds_to_sleep, seconds_to_shutdown);
         power_save_timer_->OnEnterSleepMode([this]() {
+            ESP_LOGW(TAG, "Display entering idle sleep: external_power=%d", IsExternalPowerConnected());
             GetDisplay()->SetPowerSaveMode(true);
             // GetBacklight()->SetBrightness(10);
         });
         power_save_timer_->OnExitSleepMode([this]() {
+            ESP_LOGI(TAG, "Display waking from idle sleep: external_power=%d", IsExternalPowerConnected());
             GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness();
         });
@@ -908,7 +914,9 @@ public:
     int GetIrqStatus()
     {
         int a = 0, b = 0, c = 0;
-        pmic_->ReadIrqStatus(a, b, c);
+        if (pmic_->ReadIrqStatus(a, b, c) != 0) {
+            return -1;
+        }
         return ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF);
     }
 

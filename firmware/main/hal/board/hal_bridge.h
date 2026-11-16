@@ -62,10 +62,10 @@ bool board_is_battery_charging();
 bool board_is_external_power_connected();
 // Packed AXP2101 status registers, (STATUS1 << 8) | STATUS2, for diagnostics.
 int board_get_power_status_regs();
-// Raw AXP2101 die-temperature ADC (0xA5 << 8 | 0xA6), un-converted.
+// Raw 14-bit AXP2101 die-temperature ADC (0x3C/0x3D), un-converted.
 int board_get_die_temp_raw();
-// Raw AXP2101 ADC results 0x34..0x3B as four 16-bit values (battery / VBUS /
-// VSYS / TS, assignment to be confirmed by magnitude rather than assumed).
+// 14-bit AXP2101 ADC results in register order: VBAT / TS / VBUS / VSYS.
+// Voltages are mV; TS is raw (0.5 mV/LSB). All values are -1 on read failure.
 void board_get_adc_block(int out[4]);
 // Latched AXP2101 interrupt status, (0x48 << 16) | (0x49 << 8) | 0x4A.
 int board_get_irq_status();
