@@ -11,6 +11,88 @@
 #include <iterator>
 #include <mooncake_log.h>
 #include <nvs_flash.h>
+#include <esp_attr.h>
+#include <cstring>
+#include <esp_system.h>
+
+// Reset history kept in RTC memory that is not cleared on boot. It survives
+// ESP32-only resets (brownout, panic, watchdog, software) but not a PMIC
+// power-off, which the AXP2101 0x21 register already records. On a run with
+// no serial link (base USB socket) this is the only evidence of why the
+// chip restarted and how long the previous run lasted.
+namespace {
+constexpr uint32_t kResetHistMagic = 0x52535431;  // "RST1"
+constexpr int kResetHistLen        = 8;
+struct ResetHistory {
+    uint32_t magic;
+    uint32_t boots;
+    uint32_t up_s;  // heartbeat: uptime of the current run, updated every 2 s
+    uint8_t reason[kResetHistLen];
+    uint32_t prev_up_s[kResetHistLen];
+};
+RTC_NOINIT_ATTR ResetHistory s_reset_hist;
+int s_this_reason = -1;
+
+const char* reset_reason_name(int r)
+{
+    switch (r) {
+        case ESP_RST_POWERON: return "poweron";
+        case ESP_RST_EXT: return "ext";
+        case ESP_RST_SW: return "sw";
+        case ESP_RST_PANIC: return "panic";
+        case ESP_RST_INT_WDT: return "int_wdt";
+        case ESP_RST_TASK_WDT: return "task_wdt";
+        case ESP_RST_WDT: return "wdt";
+        case ESP_RST_DEEPSLEEP: return "deepsleep";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_SDIO: return "sdio";
+        case ESP_RST_USB: return "usb";
+        case ESP_RST_JTAG: return "jtag";
+        case ESP_RST_EFUSE: return "efuse";
+        case ESP_RST_PWR_GLITCH: return "pwr_glitch";
+        case ESP_RST_CPU_LOCKUP: return "cpu_lockup";
+        default: return "unknown";
+    }
+}
+
+void reset_history_on_boot()
+{
+    s_this_reason = static_cast<int>(esp_reset_reason());
+    if (s_reset_hist.magic != kResetHistMagic) {
+        // Cold start (or RTC memory lost): previous run length unknown.
+        std::memset(&s_reset_hist, 0, sizeof(s_reset_hist));
+        s_reset_hist.magic = kResetHistMagic;
+        s_reset_hist.up_s  = UINT32_MAX;
+    }
+    for (int i = kResetHistLen - 1; i > 0; --i) {
+        s_reset_hist.reason[i]    = s_reset_hist.reason[i - 1];
+        s_reset_hist.prev_up_s[i] = s_reset_hist.prev_up_s[i - 1];
+    }
+    s_reset_hist.reason[0]    = static_cast<uint8_t>(s_this_reason);
+    s_reset_hist.prev_up_s[0] = s_reset_hist.up_s;
+    s_reset_hist.up_s         = 0;
+    ++s_reset_hist.boots;
+}
+
+void reset_history_log()
+{
+    std::string hist;
+    const int n = std::min<uint32_t>(s_reset_hist.boots, kResetHistLen);
+    for (int i = 0; i < n; ++i) {
+        if (i) hist += ' ';
+        hist += reset_reason_name(s_reset_hist.reason[i]);
+        hist += '@';
+        hist += s_reset_hist.prev_up_s[i] == UINT32_MAX ? std::string("?")
+                                                         : std::to_string(s_reset_hist.prev_up_s[i]) + "s";
+    }
+    // hist: newest first; "reason@N s" = this boot's cause after a run of N s.
+    mclog::tagInfo("HAL", "resets: boots={} this={} prev_up={} hist=[{}]", s_reset_hist.boots,
+                   reset_reason_name(s_this_reason),
+                   s_reset_hist.prev_up_s[0] == UINT32_MAX ? std::string("?")
+                                                           : std::to_string(s_reset_hist.prev_up_s[0]) + "s",
+                   hist);
+}
+}  // namespace
 
 static std::unique_ptr<Hal> _hal_instance;
 static const std::string_view _tag = "HAL";
@@ -27,6 +109,8 @@ Hal& GetHAL()
 void Hal::init()
 {
     mclog::tagInfo(_tag, "init");
+    reset_history_on_boot();
+    reset_history_log();
 
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -179,6 +263,7 @@ void Hal::updatePowerTelemetryLog()
         return;
     }
     last_report_tick = now;
+    s_reset_hist.up_s = now / 1000;
 
     const int irq = hal_bridge::board_get_irq_status();
     if (irq != previous_irq) {
@@ -209,6 +294,7 @@ void Hal::updateHeapStatusLog()
     }
     last_log_tick = millis();
     SystemInfo::PrintHeapStats();
+    reset_history_log();
     // External power is logged alongside the charge state because they
     // disagree in the case that matters: a full battery on USB reads
     // "discharging" with the cable still in, and that disagreement used to
