@@ -62,6 +62,8 @@ bool board_is_battery_charging();
 bool board_is_external_power_connected();
 // Packed AXP2101 status registers, (STATUS1 << 8) | STATUS2, for diagnostics.
 int board_get_power_status_regs();
+// AW9523 output registers (P0 << 8) | P1: BUS_OUT_EN = P0 bit 1, BOOST_EN = P1 bit 7.
+int board_get_ext_output_regs();
 // Raw 14-bit AXP2101 die-temperature ADC (0x3C/0x3D), un-converted.
 int board_get_die_temp_raw();
 // 14-bit AXP2101 ADC results in register order: VBAT / TS / VBUS / VSYS.

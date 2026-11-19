@@ -180,7 +180,7 @@ void Hal::io_expander_init()
 // software path, while the servo bus logs 61-658 errors per run. Running with
 // the servos unpowered says whether that subsystem is causing the shutdowns.
 // ---------------------------------------------------------------------------
-#define DIAG_DISABLE_SERVO_POWER 1
+#define DIAG_DISABLE_SERVO_POWER 0
 
 void Hal::setServoPowerEnabled(bool enabled)
 {

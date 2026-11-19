@@ -331,6 +331,8 @@ private:
     Pmic* pmic_;
 };
 
+#define DIAG_BUS_INPUT_MODE_ON_VBUS 0
+
 class Aw9523 : public I2cDevice {
 public:
     // Exanpd IO Init
@@ -345,21 +347,55 @@ public:
         WriteReg(0x13, 0b11111111);  // LEDMODE_P1
     }
 
+    // CoreS3 expander bits (per M5Unified): P1 bit 7 = SY7088 BOOST_EN,
+    // P0 bit 1 = BUS_OUT_EN. The constructor turns both on, so the
+    // battery-fed boost drives the shared 5 V bus even when USB comes in
+    // through the base. Under servo load the cable's 5 V sags below the boost
+    // setpoint and the boost carries the servos from the battery, dragging
+    // VBAT/VSYS down until the AXP2101 trips DCDC under-voltage. This puts the
+    // bus in input mode (M5Unified setExtOutput(false) order: boost off,
+    // settle, then bus output off).
+    void SetExtOutput(bool enable)
+    {
+        uint8_t p0 = ReadReg(0x02);
+        uint8_t p1 = ReadReg(0x03);
+        if (enable) {
+            WriteReg(0x03, p1 | 0b10000000);
+            WriteReg(0x02, p0 | 0b00000010);
+        } else {
+            WriteReg(0x03, p1 & ~0b10000000);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            WriteReg(0x02, p0 & ~0b00000010);
+        }
+    }
+
+    // (P0 << 8) | P1 output registers as read back from the chip.
+    int ReadOutputRegs()
+    {
+        return (ReadReg(0x02) << 8) | ReadReg(0x03);
+    }
+
     void ResetAw88298()
     {
         ESP_LOGI(TAG, "Reset AW88298");
-        WriteReg(0x02, 0b00000011);
+        // Read-modify-write: only the P0 bit 2 reset line, so BUS_OUT_EN
+        // (P0 bit 1) is never forced back on.
+        const uint8_t p0 = ReadReg(0x02);
+        WriteReg(0x02, p0 & ~0b00000100);
         vTaskDelay(pdMS_TO_TICKS(10));
-        WriteReg(0x02, 0b00000111);
+        WriteReg(0x02, p0 | 0b00000100);
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     void ResetIli9342()
     {
         ESP_LOGI(TAG, "Reset IlI9342");
-        WriteReg(0x03, 0b10000001);
+        // Read-modify-write: only the P1 bit 1 LCD reset line, so BOOST_EN
+        // (P1 bit 7) is never forced back on.
+        const uint8_t p1 = ReadReg(0x03);
+        WriteReg(0x03, p1 & ~0b00000010);
         vTaskDelay(pdMS_TO_TICKS(20));
-        WriteReg(0x03, 0b10000011);
+        WriteReg(0x03, p1 | 0b00000010);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 };
@@ -828,6 +864,22 @@ public:
         InitializeAxp2101();
         InitializePowerSaveTimer();
         InitializeAw9523();
+#if DIAG_BUS_INPUT_MODE_ON_VBUS
+        {
+            bool ext = false, chg = false, dis = false;
+            const bool ok = pmic_->TryReadPowerStatus(ext, chg, dis) == ESP_OK;
+            if (ok && ext) {
+                aw9523_->SetExtOutput(false);
+                const int regs = aw9523_->ReadOutputRegs();
+                ESP_LOGW(TAG, "DIAG build: external 5V present, requested bus input mode "
+                              "(DIAG_BUS_INPUT_MODE_ON_VBUS=1); readback P0=0x%02X P1=0x%02X "
+                              "BUS_OUT_EN=%d BOOST_EN=%d", regs >> 8, regs & 0xFF,
+                         (regs >> 9) & 1, (regs >> 7) & 1);
+            } else {
+                ESP_LOGW(TAG, "DIAG build: no external 5V at boot (ok=%d), CoreS3 boost and BUS_OUT left on", ok);
+            }
+        }
+#endif
         I2cDetect();
         InitializeFt6336();
         InitializeSpi();
@@ -920,6 +972,11 @@ public:
         return ((a & 0xFF) << 16) | ((b & 0xFF) << 8) | (c & 0xFF);
     }
 
+    int GetExtOutputRegs()
+    {
+        return aw9523_ ? aw9523_->ReadOutputRegs() : -1;
+    }
+
     // (STATUS1 << 8) | STATUS2, so a log line can show what the power-state
     // decision was actually based on.
     int GetPowerStatusRegs()
@@ -998,6 +1055,12 @@ int hal_bridge::board_get_irq_status()
 {
     auto& board = (M5StackCoreS3Board&)Board::GetInstance();
     return board.GetIrqStatus();
+}
+
+int hal_bridge::board_get_ext_output_regs()
+{
+    auto& board = (M5StackCoreS3Board&)Board::GetInstance();
+    return board.GetExtOutputRegs();
 }
 
 int hal_bridge::board_get_power_status_regs()

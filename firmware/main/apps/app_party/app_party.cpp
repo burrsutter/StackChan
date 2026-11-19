@@ -29,6 +29,13 @@ namespace {
 // How long a server command keeps the head (and the LEDs) before the music
 // and idle behaviour take back over.
 constexpr uint32_t kServerMotionHoldMs = 3000;
+
+// PARTY head motion switch (2026-11-17). Off while the USB power-off is open:
+// every motors-on PARTY run ended in an AXP2101 DCDC under-voltage shutdown
+// within 5-14 min, motors-off runs lasted 5-18 h. Off = face, mouth and LEDs
+// still react to music; no beat nods, no idle drift, no server-driven head
+// moves; servos stay powered but relaxed (auto torque release).
+constexpr bool kPartyHeadMotion = false;
 constexpr uint32_t kServerLedHoldMs    = 5000;
 
 // Launcher position this app restores to after the warm reboot on close.
@@ -148,11 +155,15 @@ void AppParty::onOpen()
         calm.speedMax       = 200;
         calm.smallMovesOnly = true;
 
-        auto idle_motion = std::make_unique<IdleMotionModifier>(4000, 8000, calm);
-        _idle_motion     = idle_motion.get();
-        stackchan.addModifier(std::move(idle_motion));
+        if (kPartyHeadMotion) {
+            auto idle_motion = std::make_unique<IdleMotionModifier>(4000, 8000, calm);
+            _idle_motion     = idle_motion.get();
+            stackchan.addModifier(std::move(idle_motion));
 
-        park_at_neutral();
+            park_at_neutral();
+        } else {
+            mclog::tagWarn(getAppInfo().name, "head motion disabled in PARTY (kPartyHeadMotion=false)");
+        }
     }
 
     /* ---------------------------- Websocket events ---------------------------- */
@@ -173,6 +184,9 @@ void AppParty::onOpen()
     });
 
     GetHAL().onWsMotionData.connect([&](std::string_view data) {
+        if (!kPartyHeadMotion) {
+            return;
+        }
         LvglLockGuard lvgl_lock;
         if (_idle_motion) {
             _idle_motion->pause();
@@ -260,6 +274,9 @@ void AppParty::onOpen()
     });
 
     GetHAL().onWsDanceData.connect([&](std::string_view data) {
+        if (!kPartyHeadMotion) {
+            return;
+        }
         LvglLockGuard lvgl_lock;
         auto sequence = stackchan::animation::parse_sequence_from_json(data.data());
         if (sequence.empty()) {
@@ -686,6 +703,10 @@ void AppParty::begin_rest(Rest reason)
 float AppParty::nod_scale() const
 {
     using namespace dance;
+
+    if (!kPartyHeadMotion) {
+        return 0.0f;  // no parking and no nods; the face still moves on the beat
+    }
 
     float scale = 1.0f;
     switch (_rest) {

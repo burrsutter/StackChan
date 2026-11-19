@@ -295,6 +295,13 @@ void Hal::updateHeapStatusLog()
     last_log_tick = millis();
     SystemInfo::PrintHeapStats();
     reset_history_log();
+    {
+        // Called only from the app loop, after the board exists (calling the
+        // bridge from Hal::init would construct the board early).
+        const int ext = hal_bridge::board_get_ext_output_regs();
+        mclog::tagInfo(_tag, "ext5v: bus_out_en={} boost_en={} (aw9523 P0=0x{:02X} P1=0x{:02X})",
+                       (ext >> 9) & 1, (ext >> 7) & 1, (ext >> 8) & 0xFF, ext & 0xFF);
+    }
     // External power is logged alongside the charge state because they
     // disagree in the case that matters: a full battery on USB reads
     // "discharging" with the cable still in, and that disagreement used to
